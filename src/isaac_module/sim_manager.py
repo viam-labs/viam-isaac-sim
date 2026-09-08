@@ -100,7 +100,7 @@ class SimManager:
             return cls._instance
 
     def __init__(self) -> None:
-        self._tasks: "queue.Queue[Tuple[Callable[[], Any], Future]]" = queue.Queue()
+        self._tasks: "queue.Queue[Tuple[str, bool, float, Callable[[], Any], Future]]" = queue.Queue()
         self._boot_requested = threading.Event()
         self._booted = threading.Event()
         self._boot_error: Optional[BaseException] = None
@@ -117,6 +117,9 @@ class SimManager:
         # resources on config change, but prims can't be re-spawned without
         # restarting kit, so handles are cached per component name.
         self._handles: Dict[str, Tuple[Dict[str, Any], Any]] = {}
+        self._active_operation_lock = threading.Lock()
+        self._active_operation: Optional[str] = None
+        self._active_operation_started_at = 0.0
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -138,10 +141,19 @@ class SimManager:
 
         self.cfg = cfg
         self._boot_requested.set()
+        started_at = time.monotonic()
+        LOGGER.info("waiting for isaac sim boot (timeout_sec=%.1f)", cfg.boot_timeout)
         if not self._booted.wait(timeout=cfg.boot_timeout):
+            LOGGER.error(
+                "isaac sim boot timed out after %.3fs", time.monotonic() - started_at
+            )
             raise TimeoutError(f"isaac sim did not boot within {cfg.boot_timeout}s")
         if self._boot_error is not None:
+            LOGGER.error(
+                "isaac sim boot failed after %.3fs", time.monotonic() - started_at
+            )
             raise RuntimeError(f"isaac sim failed to boot: {self._boot_error}")
+        LOGGER.info("isaac sim boot completed in %.3fs", time.monotonic() - started_at)
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -177,7 +189,18 @@ class SimManager:
                     cb(dt)
                 time.sleep(0.01)
             else:
-                self.world.step(render=True)
+                step_started_at = time.monotonic()
+                previous_operation = self._set_active_operation("world step")
+                try:
+                    self.world.step(render=True)
+                except BaseException:
+                    LOGGER.exception("isaac sim world step failed")
+                    raise
+                finally:
+                    elapsed = time.monotonic() - step_started_at
+                    self._restore_active_operation(previous_operation)
+                if elapsed >= 1.0:
+                    LOGGER.warning("slow isaac sim world step (elapsed_sec=%.3f)", elapsed)
 
         if self._sim_app is not None:
             try:
@@ -185,25 +208,125 @@ class SimManager:
             except Exception:
                 LOGGER.exception("error closing isaac sim")
 
+    def _set_active_operation(self, operation: str) -> Tuple[Optional[str], float]:
+        with self._active_operation_lock:
+            previous = (self._active_operation, self._active_operation_started_at)
+            self._active_operation = operation
+            self._active_operation_started_at = time.monotonic()
+            return previous
+
+    def _restore_active_operation(self, previous: Tuple[Optional[str], float]) -> None:
+        with self._active_operation_lock:
+            self._active_operation, self._active_operation_started_at = previous
+
+    def _active_operation_details(self) -> Tuple[str, float]:
+        with self._active_operation_lock:
+            if self._active_operation is None:
+                return "idle", 0.0
+            return self._active_operation, time.monotonic() - self._active_operation_started_at
+
+    def _timed_operation(self, operation: str, fn: Callable[[], Any]) -> Any:
+        started_at = time.monotonic()
+        previous_operation = self._set_active_operation(operation)
+        LOGGER.info("isaac sim operation started: %s", operation)
+        try:
+            result = fn()
+        except BaseException:
+            LOGGER.exception(
+                "isaac sim operation failed: %s (elapsed_sec=%.3f)",
+                operation,
+                time.monotonic() - started_at,
+            )
+            raise
+        else:
+            LOGGER.info(
+                "isaac sim operation completed: %s (elapsed_sec=%.3f)",
+                operation,
+                time.monotonic() - started_at,
+            )
+            return result
+        finally:
+            self._restore_active_operation(previous_operation)
+
     def _drain_tasks(self) -> None:
         while True:
             try:
-                fn, fut = self._tasks.get_nowait()
+                operation, trace, queued_at, fn, fut = self._tasks.get_nowait()
             except queue.Empty:
                 return
             if fut.set_running_or_notify_cancel():
+                started_at = time.monotonic()
+                queue_wait = started_at - queued_at
+                previous_operation = self._set_active_operation(operation)
+                if trace:
+                    LOGGER.info(
+                        "isaac sim task started: %s (queue_wait_sec=%.3f)",
+                        operation,
+                        queue_wait,
+                    )
                 try:
                     fut.set_result(fn())
                 except BaseException as e:
+                    LOGGER.exception(
+                        "isaac sim task failed: %s (queue_wait_sec=%.3f elapsed_sec=%.3f)",
+                        operation,
+                        queue_wait,
+                        time.monotonic() - started_at,
+                    )
                     fut.set_exception(e)
+                finally:
+                    elapsed = time.monotonic() - started_at
+                    self._restore_active_operation(previous_operation)
+                if trace:
+                    LOGGER.info(
+                        "isaac sim task finished: %s (queue_wait_sec=%.3f elapsed_sec=%.3f)",
+                        operation,
+                        queue_wait,
+                        elapsed,
+                    )
+                elif queue_wait >= 1.0 or elapsed >= 1.0:
+                    LOGGER.warning(
+                        "slow isaac sim task: %s (queue_wait_sec=%.3f elapsed_sec=%.3f)",
+                        operation,
+                        queue_wait,
+                        elapsed,
+                    )
 
-    def run(self, fn: Callable[[], Any], timeout: float = 30.0) -> Any:
+    def run(
+        self,
+        fn: Callable[[], Any],
+        timeout: float = 30.0,
+        *,
+        operation: str = "sim task",
+        trace: bool = False,
+    ) -> Any:
         """Run fn on the sim thread and return its result."""
         if threading.get_ident() == self._sim_thread_id:
             return fn()
         fut: Future = Future()
-        self._tasks.put((fn, fut))
-        return fut.result(timeout=timeout)
+        queued_at = time.monotonic()
+        self._tasks.put((operation, trace, queued_at, fn, fut))
+        if trace:
+            LOGGER.info(
+                "isaac sim task queued: %s (queue_depth=%d)",
+                operation,
+                self._tasks.qsize(),
+            )
+        try:
+            return fut.result(timeout=timeout)
+        except TimeoutError:
+            if not fut.done():
+                active_operation, active_elapsed = self._active_operation_details()
+                LOGGER.error(
+                    "isaac sim task timed out: %s (timeout_sec=%.3f queue_depth=%d "
+                    "active_operation=%s active_elapsed_sec=%.3f)",
+                    operation,
+                    timeout,
+                    self._tasks.qsize(),
+                    active_operation,
+                    active_elapsed,
+                )
+            raise
 
     # ------------------------------------------------------------------
     # boot
@@ -226,8 +349,9 @@ class SimManager:
         # quiet kit's console stream; unknown argv entries are forwarded to kit
         level = cfg.kit_log_level.capitalize()
         sys.argv.append(f"--/log/outputStreamLevel={level}")
-
-        self._sim_app = SimulationApp({"headless": cfg.headless})
+        self._sim_app = self._timed_operation(
+            "boot SimulationApp", lambda: SimulationApp({"headless": cfg.headless})
+        )
 
         try:
             import carb.settings
@@ -237,44 +361,58 @@ class SimManager:
             pass
 
         if cfg.livestream and cfg.headless:
-            try:
+
+            def _enable_livestream() -> None:
                 try:
-                    from isaacsim.core.utils.extensions import enable_extension
-                except ImportError:
-                    from omni.isaac.core.utils.extensions import enable_extension
+                    try:
+                        from isaacsim.core.utils.extensions import enable_extension
+                    except ImportError:
+                        from omni.isaac.core.utils.extensions import enable_extension
 
-                ip = cfg.livestream_public_ip or _local_ip()
-                self._sim_app.set_setting("/app/livestream/enabled", True)
-                if ip:
-                    self._sim_app.set_setting("/app/livestream/publicEndpointAddress", ip)
-                enable_extension("omni.kit.livestream.webrtc")
-                LOGGER.info(
-                    "livestream enabled - connect the 'Isaac Sim WebRTC Streaming "
-                    "Client' app to %s (TCP 49100 + UDP 47998 must be reachable)",
-                    ip or "<this machine's IP>",
-                )
-            except Exception:
-                LOGGER.exception("could not enable livestream; continuing without it")
+                    ip = cfg.livestream_public_ip or _local_ip()
+                    self._sim_app.set_setting("/app/livestream/enabled", True)
+                    if ip:
+                        self._sim_app.set_setting("/app/livestream/publicEndpointAddress", ip)
+                    enable_extension("omni.kit.livestream.webrtc")
+                    LOGGER.info(
+                        "livestream enabled - connect the 'Isaac Sim WebRTC Streaming "
+                        "Client' app to %s (TCP 49100 + UDP 47998 must be reachable)",
+                        ip or "<this machine's IP>",
+                    )
+                except Exception:
+                    LOGGER.exception("could not enable livestream; continuing without it")
 
-        self._isaac = _import_isaac()
+            self._timed_operation("enable livestream", _enable_livestream)
+
+        self._isaac = self._timed_operation("import Isaac APIs", _import_isaac)
 
         if cfg.usd_stage:
-            LOGGER.info("opening stage %s", cfg.usd_stage)
-            self._isaac.open_stage(cfg.usd_stage)
+            self._timed_operation(
+                f"open stage {cfg.usd_stage}",
+                lambda: self._isaac.open_stage(cfg.usd_stage),
+            )
 
-        self.world = self._isaac.World(
-            physics_dt=cfg.physics_dt,
-            rendering_dt=cfg.rendering_dt,
-            stage_units_in_meters=1.0,
+        self.world = self._timed_operation(
+            "create world",
+            lambda: self._isaac.World(
+                physics_dt=cfg.physics_dt,
+                rendering_dt=cfg.rendering_dt,
+                stage_units_in_meters=1.0,
+            ),
         )
         if not cfg.usd_stage:
-            self.world.scene.add_default_ground_plane()
+            self._timed_operation(
+                "add default ground plane", self.world.scene.add_default_ground_plane
+            )
         for prop in cfg.props:
             try:
-                self._spawn_prop(prop)
+                self._timed_operation(
+                    f"spawn prop {prop.get('name', '<unnamed>')}",
+                    lambda: self._spawn_prop(prop),
+                )
             except Exception:
-                LOGGER.exception("failed to spawn prop %s", prop.get("name"))
-        self.world.reset()
+                pass
+        self._timed_operation("initial world reset", self.world.reset)
         LOGGER.info("isaac sim world ready")
 
     def _spawn_prop(self, prop: Dict[str, Any]) -> None:
@@ -333,17 +471,17 @@ class SimManager:
     def play(self) -> None:
         self._require_booted()
         if not self.mock:
-            self.run(lambda: self.world.play())
+            self.run(lambda: self.world.play(), operation="play world")
 
     def pause(self) -> None:
         self._require_booted()
         if not self.mock:
-            self.run(lambda: self.world.pause())
+            self.run(lambda: self.world.pause(), operation="pause world")
 
     def reset(self) -> None:
         self._require_booted()
         if not self.mock:
-            self.run(lambda: self.world.reset())
+            self.run(lambda: self.world.reset(), operation="reset world", trace=True)
 
     def status(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
@@ -352,8 +490,12 @@ class SimManager:
             "error": str(self._boot_error) if self._boot_error else "",
         }
         if self._booted.is_set() and not self.mock:
-            out["playing"] = self.run(lambda: bool(self.world.is_playing()))
-            out["sim_time"] = self.run(lambda: float(self.world.current_time))
+            out["playing"] = self.run(
+                lambda: bool(self.world.is_playing()), operation="read world playing state"
+            )
+            out["sim_time"] = self.run(
+                lambda: float(self.world.current_time), operation="read world simulation time"
+            )
         return out
 
     def add_usd_reference(
@@ -371,7 +513,12 @@ class SimManager:
             prim = self._isaac.SingleXFormPrim(prim_path)
             prim.set_world_pose(position=list(position))
 
-        self.run(_add, timeout=60.0)
+        self.run(
+            _add,
+            timeout=60.0,
+            operation=f"add USD reference {prim_path}",
+            trace=True,
+        )
 
     # ------------------------------------------------------------------
     # component factories
@@ -450,17 +597,25 @@ class SimManager:
             factory = lambda: MockArmHandle(name, attrs)
         else:
             factory = lambda: self.run(
-                lambda: self._create_arm_isaac(name, attrs), timeout=120.0
+                lambda: self._create_arm_isaac(name, attrs),
+                timeout=120.0,
+                operation=f"create arm {name}",
+                trace=True,
             )
         return self._cached_handle("arm", name, attrs, factory)
 
     def _create_arm_isaac(self, name: str, attrs: Dict[str, Any]) -> "IsaacArmHandle":
         from .spatial import to_vec3
 
-        usd, _ = self._resolve_usd(attrs)
+        usd, _ = self._timed_operation(
+            f"resolve arm {name} USD", lambda: self._resolve_usd(attrs)
+        )
         prim_path = attrs.get("prim_path") or f"/World/{_prim_name(name)}"
         if usd:
-            self._isaac.add_reference_to_stage(usd_path=usd, prim_path=prim_path)
+            self._timed_operation(
+                f"add arm {name} USD reference",
+                lambda: self._isaac.add_reference_to_stage(usd_path=usd, prim_path=prim_path),
+            )
 
         position = to_vec3(attrs.get("position"))
         kwargs: Dict[str, Any] = dict(
@@ -468,9 +623,11 @@ class SimManager:
         )
         if attrs.get("orientation_wxyz") is not None:
             kwargs["orientation"] = [float(v) for v in attrs["orientation_wxyz"]]
-        art = self._isaac.SingleArticulation(**kwargs)
-        self.world.scene.add(art)
-        self.world.reset()
+        art = self._timed_operation(
+            f"construct arm {name}", lambda: self._isaac.SingleArticulation(**kwargs)
+        )
+        self._timed_operation(f"add arm {name} to scene", lambda: self.world.scene.add(art))
+        self._timed_operation(f"reset world after arm {name}", self.world.reset)
 
         ee = None
         ee_path = attrs.get("end_effector_prim")
@@ -484,7 +641,10 @@ class SimManager:
             factory = lambda: MockCameraHandle(name, attrs)
         else:
             factory = lambda: self.run(
-                lambda: self._create_camera_isaac(name, attrs), timeout=120.0
+                lambda: self._create_camera_isaac(name, attrs),
+                timeout=120.0,
+                operation=f"create camera {name}",
+                trace=True,
             )
         return self._cached_handle("camera", name, attrs, factory)
 
@@ -495,7 +655,10 @@ class SimManager:
 
         parent = attrs.get("parent_prim")
         if parent:
-            self._require_prim(parent)
+            self._timed_operation(
+                f"validate camera {name} parent prim",
+                lambda: self._require_prim(parent),
+            )
             prim_path = f"{parent.rstrip('/')}/{_prim_name(name)}"
         else:
             prim_path = attrs.get("prim_path") or f"/World/{_prim_name(name)}"
@@ -513,8 +676,10 @@ class SimManager:
             r, p, y = to_vec3(attrs.get("orientation_rpy_deg"))
             kwargs["orientation"] = list(quat_from_euler_deg(r, p, y))
 
-        cam = self._isaac.Camera(**kwargs)
-        cam.initialize()
+        cam = self._timed_operation(
+            f"construct camera {name}", lambda: self._isaac.Camera(**kwargs)
+        )
+        self._timed_operation(f"initialize camera {name}", cam.initialize)
 
         if parent:
             # camera rides a (possibly moving) link; pose is local to it.
@@ -572,14 +737,19 @@ class SimManager:
             factory = lambda: MockBaseHandle(name, attrs)
         else:
             factory = lambda: self.run(
-                lambda: self._create_base_isaac(name, attrs), timeout=120.0
+                lambda: self._create_base_isaac(name, attrs),
+                timeout=120.0,
+                operation=f"create base {name}",
+                trace=True,
             )
         return self._cached_handle("base", name, attrs, factory)
 
     def _create_base_isaac(self, name: str, attrs: Dict[str, Any]) -> "IsaacBaseHandle":
         from .spatial import to_vec3
 
-        usd, meta = self._resolve_usd(attrs)
+        usd, meta = self._timed_operation(
+            f"resolve base {name} USD", lambda: self._resolve_usd(attrs)
+        )
         prim_path = attrs.get("prim_path") or f"/World/{_prim_name(name)}"
         wheel_joints = attrs.get("wheel_joints") or meta.get("wheel_joints")
         if not wheel_joints or len(wheel_joints) != 2:
@@ -601,9 +771,13 @@ class SimManager:
         )
         if attrs.get("orientation_wxyz") is not None:
             base_kwargs["orientation"] = [float(v) for v in attrs["orientation_wxyz"]]
-        robot = self._isaac.WheeledRobot(**base_kwargs)
-        self.world.scene.add(robot)
-        self.world.reset()
+        robot = self._timed_operation(
+            f"construct base {name}", lambda: self._isaac.WheeledRobot(**base_kwargs)
+        )
+        self._timed_operation(
+            f"add base {name} to scene", lambda: self.world.scene.add(robot)
+        )
+        self._timed_operation(f"reset world after base {name}", self.world.reset)
 
         controller = self._isaac.DifferentialController(
             name=f"{name}_controller",
@@ -752,7 +926,10 @@ class IsaacArmHandle(ArmHandle):
         self._ee = ee_prim
 
     def get_joint_positions(self) -> List[float]:
-        return self._sim.run(lambda: [float(v) for v in self._art.get_joint_positions()])
+        return self._sim.run(
+            lambda: [float(v) for v in self._art.get_joint_positions()],
+            operation="read arm joint positions",
+        )
 
     def set_joint_targets(self, positions: List[float]) -> None:
         import numpy as np
@@ -763,7 +940,7 @@ class IsaacArmHandle(ArmHandle):
             )
             self._art.apply_action(action)
 
-        self._sim.run(_apply)
+        self._sim.run(_apply, operation="set arm joint targets")
 
     def is_moving(self) -> bool:
         def _check():
@@ -772,7 +949,7 @@ class IsaacArmHandle(ArmHandle):
                 return False
             return bool(max(abs(float(v)) for v in vels) > 1e-2)
 
-        return self._sim.run(_check)
+        return self._sim.run(_check, operation="read arm moving state")
 
     def stop(self) -> None:
         # hold the current position
@@ -792,7 +969,7 @@ class IsaacArmHandle(ArmHandle):
                 (float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])),
             )
 
-        return self._sim.run(_pose)
+        return self._sim.run(_pose, operation="read arm end pose")
 
 
 class MockArmHandle(ArmHandle):
@@ -872,7 +1049,7 @@ class IsaacCameraHandle(CameraHandle):
                 )
             return frame[:, :, :3].copy()
 
-        return self._sim.run(_grab)
+        return self._sim.run(_grab, operation="read camera RGB")
 
 
 class MockCameraHandle(CameraHandle):

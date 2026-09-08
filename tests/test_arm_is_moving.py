@@ -10,7 +10,7 @@ class _FakeArt:
 
 
 class _FakeSim:
-    def run(self, fn, timeout=None):
+    def run(self, fn, timeout=None, **kwargs):
         return fn()
 
 
