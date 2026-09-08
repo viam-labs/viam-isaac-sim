@@ -558,6 +558,21 @@ class SimManager:
         except Exception:
             return None
 
+    def _remove_stale_scene_object(self, kind: str, name: str) -> None:
+        """Drop an orphaned scene-registry entry without deleting its USD prim."""
+        scene = self.world.scene
+        if not scene.object_exists(name):
+            return
+        LOGGER.warning(
+            "%s %r: removing stale Isaac scene registry entry before reconfigure",
+            kind,
+            name,
+        )
+        self._timed_operation(
+            f"remove stale {kind} {name} scene registry entry",
+            lambda: scene.remove_object(name, registry_only=True),
+        )
+
     def _resolve_usd(self, attrs: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any]]:
         """Return (absolute usd path or None, known-asset metadata)."""
         meta: Dict[str, Any] = {}
@@ -614,7 +629,9 @@ class SimManager:
         if usd:
             self._timed_operation(
                 f"add arm {name} USD reference",
-                lambda: self._isaac.add_reference_to_stage(usd_path=usd, prim_path=prim_path),
+                lambda: self._isaac.add_reference_to_stage(
+                    usd_path=usd, prim_path=prim_path
+                ),
             )
 
         position = to_vec3(attrs.get("position"))
@@ -626,7 +643,10 @@ class SimManager:
         art = self._timed_operation(
             f"construct arm {name}", lambda: self._isaac.SingleArticulation(**kwargs)
         )
-        self._timed_operation(f"add arm {name} to scene", lambda: self.world.scene.add(art))
+        self._remove_stale_scene_object("arm", name)
+        self._timed_operation(
+            f"add arm {name} to scene", lambda: self.world.scene.add(art)
+        )
         self._timed_operation(f"reset world after arm {name}", self.world.reset)
 
         ee = None

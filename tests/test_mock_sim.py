@@ -138,3 +138,35 @@ def test_base_drives(world):
         assert props.wheel_circumference_meters == pytest.approx(2 * math.pi * 0.05)
 
     asyncio.run(scenario())
+
+
+def test_stale_arm_scene_entry_is_removed_before_reconfigure():
+    class Scene:
+        def __init__(self):
+            self.objects = {"pick-arm"}
+            self.removals = []
+
+        def object_exists(self, name):
+            return name in self.objects
+
+        def remove_object(self, name, registry_only=False):
+            self.removals.append((name, registry_only))
+            self.objects.remove(name)
+
+        def add(self, name):
+            if name in self.objects:
+                raise ValueError("name is not unique")
+            self.objects.add(name)
+
+    class World:
+        def __init__(self, scene):
+            self.scene = scene
+
+    scene = Scene()
+    manager = SimManager()
+    manager.world = World(scene)
+
+    manager._remove_stale_scene_object("arm", "pick-arm")
+    scene.add("pick-arm")
+
+    assert scene.removals == [("pick-arm", True)]
