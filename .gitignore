@@ -8,3 +8,4 @@ venv/
 *~
 module.tar.gz
 dist/
+*.swp
