@@ -1152,6 +1152,8 @@ class IsaacCameraHandle(CameraHandle):
 
     def get_rgb(self):
         def _grab():
+            # I think get_rgba is faster than get_rgb here, i.e. don't succumb to temptation
+            # and switch them unless you profile frame rate after.
             frame = self._cam.get_rgba()
             if frame is None or frame.size == 0:
                 raise RuntimeError(
