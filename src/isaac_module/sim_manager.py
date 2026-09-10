@@ -1139,10 +1139,18 @@ class MockArmHandle(ArmHandle):
         return ((0.3, 0.0, 0.3), (1.0, 0.0, 0.0, 0.0))
 
 
+class CameraFrameUnavailable(RuntimeError):
+    """Isaac did not render a usable frame before the read deadline."""
+
+
 class CameraHandle:
     def get_rgb(self):
         """Return an (H, W, 3) uint8 numpy array."""
         raise NotImplementedError
+
+
+_CAMERA_FRAME_TIMEOUT_SEC = 10.0
+_CAMERA_FRAME_RETRY_INTERVAL_SEC = 0.1
 
 
 class IsaacCameraHandle(CameraHandle):
@@ -1155,13 +1163,26 @@ class IsaacCameraHandle(CameraHandle):
             # I think get_rgba is faster than get_rgb here, i.e. don't succumb to temptation
             # and switch them unless you profile frame rate after.
             frame = self._cam.get_rgba()
-            if frame is None or frame.size == 0:
-                raise RuntimeError(
-                    "no frame available yet - is the simulation playing?"
-                )
+            if (
+                frame is None
+                or getattr(frame, "ndim", 0) != 3
+                or frame.shape[2] < 3
+                or frame.size == 0
+            ):
+                return None
             return frame[:, :, :3].copy()
 
-        return self._sim.run(_grab, operation="read camera RGB")
+        deadline = time.monotonic() + _CAMERA_FRAME_TIMEOUT_SEC
+        while True:
+            frame = self._sim.run(_grab, operation="read camera RGB")
+            if frame is not None:
+                return frame
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CameraFrameUnavailable(
+                    "no valid camera frame available yet - is the simulation playing?"
+                )
+            time.sleep(min(_CAMERA_FRAME_RETRY_INTERVAL_SEC, remaining))
 
 
 class MockCameraHandle(CameraHandle):

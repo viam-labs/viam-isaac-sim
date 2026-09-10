@@ -142,7 +142,8 @@ motion service.
 
 `world` (required), and either `prim_path` of an existing camera in your stage
 or `position` plus `target` (aim-at point) or `orientation_rpy_deg` to create
-one. `width`/`height` default to 640x480.
+one. `width`/`height` default to 640x480. When Isaac has not rendered a frame
+yet, image reads retry briefly rather than failing the Viam stream startup.
 
 ### base attributes
 
