@@ -1152,12 +1152,12 @@ class IsaacCameraHandle(CameraHandle):
 
     def get_rgb(self):
         def _grab():
-            frame = self._cam.get_rgb()
+            frame = self._cam.get_rgba()
             if frame is None or frame.size == 0:
                 raise RuntimeError(
                     "no frame available yet - is the simulation playing?"
                 )
-            return frame
+            return frame[:, :, :3].copy()
 
         return self._sim.run(_grab, operation="read camera RGB")
 
