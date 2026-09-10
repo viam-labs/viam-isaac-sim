@@ -142,7 +142,9 @@ motion service.
 
 `world` (required), and either `prim_path` of an existing camera in your stage
 or `position` plus `target` (aim-at point) or `orientation_rpy_deg` to create
-one. `width`/`height` default to 640x480.
+one. `width`/`height` default to 640x480. `ready_timeout_sec` defaults to 30;
+the camera component is not ready until Isaac produces a valid RGB frame, so
+Viam stream startup does not consume its initial unavailable frames.
 
 ### base attributes
 

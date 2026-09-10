@@ -5,6 +5,8 @@ Attributes:
   prim_path (string)              - existing camera prim to attach to, or
                                     where to create one (default /World/<name>)
   width / height (int)            - resolution, default 640x480
+  ready_timeout_sec (float)       - seconds to wait for an initial valid frame,
+                                     default 30
   position ([x,y,z] meters)       - where to place a newly created camera
   target ([x,y,z] meters)         - aim the camera at this point (easiest way
                                     to make a scene-monitor camera)
@@ -60,15 +62,20 @@ class IsaacCamera(Camera, EasyResource):
     def validate_config(
         cls, config: ComponentConfig
     ) -> Tuple[Sequence[str], Sequence[str]]:
-        # cameras can always be created fresh, no asset/usd required
+        attrs = get_attrs(config)
+        if "ready_timeout_sec" in attrs and float(attrs["ready_timeout_sec"]) <= 0:
+            raise ValueError("ready_timeout_sec must be positive")
         return validate_sim_component(config, needs_source=False)
 
     def reconfigure(
         self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]
     ) -> None:
         attrs = apply_frame_to_attrs(config, get_attrs(config))
+        ready_timeout = float(attrs.get("ready_timeout_sec", 30.0))
+        handle = SimManager.get().create_camera(self.name, attrs)
+        handle.wait_for_rgb_frame(ready_timeout)
         self._attrs = attrs
-        self._handle = SimManager.get().create_camera(self.name, attrs)
+        self._handle = handle
 
     def _h(self) -> CameraHandle:
         if self._handle is None:
