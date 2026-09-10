@@ -14,8 +14,10 @@ Attributes:
   usd_stage (string)                - USD file/omniverse URL to open; if unset
                                       an empty stage with a ground plane is used
   physics_dt / rendering_dt (float) - sim step sizes, default 1/60
-  boot_timeout_sec (float)          - how long to wait for kit to boot
-  kit_log_level (string)            - kit console verbosity, default "warning"
+  boot_timeout_sec (float) - how long to wait for kit to boot
+  ready_step_max_sec (float) - require a world step below this duration; 0 disables
+  ready_step_timeout_sec (float) - how long to wait for that fast step
+  kit_log_level (string) - kit console verbosity, default "warning"
   props (list)                      - objects spawned into the scene at boot:
                                       {"name", "type": "cube"|"usd",
                                        "position": [x,y,z] meters,
@@ -30,6 +32,7 @@ DoCommand:
    "position": [x, y, z]}
 """
 
+import asyncio
 from typing import Any, ClassVar, Dict, Mapping, Optional, Sequence, Tuple
 
 from typing_extensions import Self
@@ -61,9 +64,16 @@ class IsaacWorld(Generic, EasyResource):
         cls, config: ComponentConfig
     ) -> Tuple[Sequence[str], Sequence[str]]:
         attrs = struct_to_dict(config.attributes)
-        for key in ("physics_dt", "rendering_dt", "boot_timeout_sec"):
+        for key in (
+            "physics_dt",
+            "rendering_dt",
+            "boot_timeout_sec",
+            "ready_step_timeout_sec",
+        ):
             if key in attrs and float(attrs[key]) <= 0:
                 raise ValueError(f"{key} must be positive")
+        if "ready_step_max_sec" in attrs and float(attrs["ready_step_max_sec"]) < 0:
+            raise ValueError("ready_step_max_sec must be nonnegative")
         return [], []
 
     def reconfigure(
@@ -77,6 +87,8 @@ class IsaacWorld(Generic, EasyResource):
             usd_stage=attrs.get("usd_stage") or None,
             physics_dt=float(attrs.get("physics_dt", 1.0 / 60.0)),
             rendering_dt=float(attrs.get("rendering_dt", 1.0 / 60.0)),
+            ready_step_max=float(attrs.get("ready_step_max_sec", 10.0)),
+            ready_step_timeout=float(attrs.get("ready_step_timeout_sec", 600.0)),
             boot_timeout=float(attrs.get("boot_timeout_sec", 300.0)),
             kit_log_level=str(attrs.get("kit_log_level", "warning")),
             livestream_public_ip=str(attrs.get("livestream_public_ip", "")),
@@ -94,15 +106,15 @@ class IsaacWorld(Generic, EasyResource):
         sim = SimManager.get()
         cmd = str(command.get("command", ""))
         if cmd == "status":
-            return sim.status()
+            return await asyncio.to_thread(sim.status)
         if cmd == "play":
-            sim.play()
+            await asyncio.to_thread(sim.play)
             return {"ok": True}
         if cmd == "pause":
-            sim.pause()
+            await asyncio.to_thread(sim.pause)
             return {"ok": True}
         if cmd == "reset":
-            sim.reset()
+            await asyncio.to_thread(sim.reset)
             return {"ok": True}
         if cmd == "add_usd":
             usd_path = str(command.get("usd_path", ""))
@@ -110,8 +122,11 @@ class IsaacWorld(Generic, EasyResource):
             if not usd_path or not prim_path:
                 raise ValueError("add_usd requires usd_path and prim_path")
             position = command.get("position") or [0.0, 0.0, 0.0]
-            sim.add_usd_reference(
-                usd_path, prim_path, tuple(float(v) for v in position)
+            await asyncio.to_thread(
+                sim.add_usd_reference,
+                usd_path,
+                prim_path,
+                tuple(float(v) for v in position),
             )
             return {"ok": True}
         raise ValueError(

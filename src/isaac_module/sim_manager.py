@@ -73,6 +73,8 @@ class SimConfig:
     physics_dt: float = 1.0 / 60.0
     rendering_dt: float = 1.0 / 60.0
     boot_timeout: float = 300.0
+    ready_step_max: float = 10.0
+    ready_step_timeout: float = 600.0
     # IP the livestream advertises to clients; auto-detected if empty
     livestream_public_ip: str = ""
     # props to spawn into the scene at boot; each entry:
@@ -103,6 +105,8 @@ class SimManager:
         self._tasks: "queue.Queue[Tuple[str, bool, float, Callable[[], Any], Future]]" = queue.Queue()
         self._boot_requested = threading.Event()
         self._booted = threading.Event()
+        self._fast_step_ready = threading.Event()
+        self._waiting_for_fast_step = threading.Event()
         self._boot_error: Optional[BaseException] = None
         self._stop = threading.Event()
         self._sim_thread_id: Optional[int] = None
@@ -126,20 +130,30 @@ class SimManager:
     # ------------------------------------------------------------------
 
     def ensure_booted(self, cfg: SimConfig) -> None:
-        """Called by the world component's reconfigure. Boots the sim on the
-        sim thread the first time; subsequent calls with a different config
-        log that a module restart is required (Kit can't be re-created)."""
+        """Boot the sim and wait for the configured fast-step readiness gate."""
         if self._booted.is_set():
             if self.cfg != cfg:
                 LOGGER.warning(
                     "isaac sim is already running; changes to world config "
                     "(stage/headless/etc) require restarting the module"
                 )
+            self._wait_for_fast_step(self.cfg or cfg)
             return
         if self._boot_error is not None:
             raise RuntimeError(f"isaac sim failed to boot previously: {self._boot_error}")
 
         self.cfg = cfg
+        self._fast_step_ready.clear()
+        if cfg.ready_step_max > 0:
+            self._waiting_for_fast_step.set()
+            LOGGER.info(
+                "isaac sim fast-step readiness gate armed "
+                "(max_sec=%.3f timeout_sec=%.1f)",
+                cfg.ready_step_max,
+                cfg.ready_step_timeout,
+            )
+        else:
+            self._waiting_for_fast_step.clear()
         self._boot_requested.set()
         started_at = time.monotonic()
         LOGGER.info("waiting for isaac sim boot (timeout_sec=%.1f)", cfg.boot_timeout)
@@ -154,6 +168,34 @@ class SimManager:
             )
             raise RuntimeError(f"isaac sim failed to boot: {self._boot_error}")
         LOGGER.info("isaac sim boot completed in %.3fs", time.monotonic() - started_at)
+        self._wait_for_fast_step(cfg)
+
+    def _wait_for_fast_step(self, cfg: SimConfig) -> None:
+        if cfg.ready_step_max <= 0:
+            return
+        if self._fast_step_ready.is_set():
+            return
+        self._waiting_for_fast_step.set()
+        started_at = time.monotonic()
+        LOGGER.info(
+            "waiting for first isaac sim world step below %.3fs (timeout_sec=%.1f)",
+            cfg.ready_step_max,
+            cfg.ready_step_timeout,
+        )
+        if not self._fast_step_ready.wait(timeout=cfg.ready_step_timeout):
+            self._waiting_for_fast_step.clear()
+            LOGGER.error(
+                "isaac sim fast-step readiness timed out after %.3fs",
+                time.monotonic() - started_at,
+            )
+            raise TimeoutError(
+                "isaac sim did not complete a world step below "
+                f"{cfg.ready_step_max}s within {cfg.ready_step_timeout}s"
+            )
+        LOGGER.info(
+            "isaac sim fast-step readiness completed in %.3fs",
+            time.monotonic() - started_at,
+        )
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -184,12 +226,12 @@ class SimManager:
             now = time.monotonic()
             dt = now - last
             last = now
+            step_started_at = time.monotonic()
             if self.mock:
                 for cb in list(self._step_callbacks.values()):
                     cb(dt)
                 time.sleep(0.01)
             else:
-                step_started_at = time.monotonic()
                 previous_operation = self._set_active_operation("world step")
                 try:
                     self.world.step(render=True)
@@ -197,16 +239,36 @@ class SimManager:
                     LOGGER.exception("isaac sim world step failed")
                     raise
                 finally:
-                    elapsed = time.monotonic() - step_started_at
                     self._restore_active_operation(previous_operation)
-                if elapsed >= 1.0:
-                    LOGGER.warning("slow isaac sim world step (elapsed_sec=%.3f)", elapsed)
-
+            elapsed = time.monotonic() - step_started_at
+            self._record_world_step(elapsed)
+            if elapsed >= 1.0:
+                LOGGER.warning("slow isaac sim world step (elapsed_sec=%.3f)", elapsed)
         if self._sim_app is not None:
             try:
                 self._sim_app.close()
             except Exception:
                 LOGGER.exception("error closing isaac sim")
+
+    def _record_world_step(self, elapsed: float) -> None:
+        cfg = self.cfg
+        if cfg is None or cfg.ready_step_max <= 0:
+            return
+        if self._waiting_for_fast_step.is_set():
+            LOGGER.info(
+                "isaac sim world readiness step (elapsed_sec=%.3f max_sec=%.3f)",
+                elapsed,
+                cfg.ready_step_max,
+            )
+        if elapsed < cfg.ready_step_max and not self._fast_step_ready.is_set():
+            self._fast_step_ready.set()
+            self._waiting_for_fast_step.clear()
+            LOGGER.info(
+                "isaac sim first fast world step (elapsed_sec=%.3f max_sec=%.3f)",
+                elapsed,
+                cfg.ready_step_max,
+            )
+
 
     def _set_active_operation(self, operation: str) -> Tuple[Optional[str], float]:
         with self._active_operation_lock:

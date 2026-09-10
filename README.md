@@ -106,6 +106,8 @@ overrides orientation to aim at a point.
 | `usd_stage` | _empty stage + ground plane_ | USD file or omniverse:// URL to open |
 | `physics_dt` / `rendering_dt` | `1/60` | step sizes in seconds |
 | `boot_timeout_sec` | `300` | Isaac Sim can take a while on first boot |
+| `ready_step_max_sec` | `10` | world is ready only after a completed `world.step(render=True)` below this duration; `0` disables the gate |
+| `ready_step_timeout_sec` | `600` | maximum wait for the fast readiness step after Kit boot |
 
 The world also supports `DoCommand`: `{"command": "status" | "play" | "pause" |
 "reset"}` and `{"command": "add_usd", "usd_path": "...", "prim_path":
