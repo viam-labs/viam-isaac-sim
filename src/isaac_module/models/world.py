@@ -17,7 +17,7 @@ Attributes:
   boot_timeout_sec (float) - how long to wait for kit to boot
   ready_step_max_sec (float) - require a world step below this duration; 0 disables
   ready_step_timeout_sec (float) - how long to wait for that fast step
-  kit_log_level (string) - kit console verbosity, default "warning"
+  profile_trace_path (string) - absolute output path for a one-run Kit CPU trace
   props (list)                      - objects spawned into the scene at boot:
                                       {"name", "type": "cube"|"usd",
                                        "position": [x,y,z] meters,
@@ -33,6 +33,7 @@ DoCommand:
 """
 
 import asyncio
+from pathlib import Path
 from typing import Any, ClassVar, Dict, Mapping, Optional, Sequence, Tuple
 
 from typing_extensions import Self
@@ -46,6 +47,17 @@ from viam.utils import ValueTypes, struct_to_dict
 
 from .. import FAMILY, NAMESPACE
 from ..sim_manager import SimConfig, SimManager
+
+
+def _profile_trace_path(attrs: Mapping[str, Any]) -> Optional[str]:
+    value = attrs.get("profile_trace_path")
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError("profile_trace_path must be an absolute path string")
+    if not Path(value).is_absolute():
+        raise ValueError("profile_trace_path must be an absolute path")
+    return value
 
 
 class IsaacWorld(Generic, EasyResource):
@@ -74,6 +86,7 @@ class IsaacWorld(Generic, EasyResource):
                 raise ValueError(f"{key} must be positive")
         if "ready_step_max_sec" in attrs and float(attrs["ready_step_max_sec"]) < 0:
             raise ValueError("ready_step_max_sec must be nonnegative")
+        _profile_trace_path(attrs)
         return [], []
 
     def reconfigure(
@@ -93,6 +106,7 @@ class IsaacWorld(Generic, EasyResource):
             kit_log_level=str(attrs.get("kit_log_level", "warning")),
             livestream_public_ip=str(attrs.get("livestream_public_ip", "")),
             props=[dict(p) for p in attrs.get("props", [])],
+            profiler_trace_path=_profile_trace_path(attrs),
         )
         SimManager.get().ensure_booted(cfg)
 

@@ -108,6 +108,13 @@ overrides orientation to aim at a point.
 | `boot_timeout_sec` | `300` | Isaac Sim can take a while on first boot |
 | `ready_step_max_sec` | `10` | world is ready only after a completed `world.step(render=True)` below this duration; `0` disables the gate |
 | `ready_step_timeout_sec` | `600` | maximum wait for the fast readiness step after Kit boot |
+| `profile_trace_path` | _disabled_ | absolute path for a compressed Kit CPU startup trace; restart the module after setting it |
+
+Set `profile_trace_path` for a short diagnostic run. Kit profiles from process
+startup and writes the Chrome/Tracy-compatible trace when the module shuts down
+cleanly. The module creates the parent directory and verifies that it can write
+the file. Disable the setting after collecting the trace; its profiler runs
+until shutdown.
 
 The world also supports `DoCommand`: `{"command": "status" | "play" | "pause" |
 "reset"}` and `{"command": "add_usd", "usd_path": "...", "prim_path":

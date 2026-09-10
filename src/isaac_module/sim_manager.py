@@ -12,6 +12,7 @@ machines without Isaac Sim installed.
 """
 
 import math
+from pathlib import Path
 import queue
 import sys
 import threading
@@ -86,6 +87,9 @@ class SimConfig:
     # of lines at info, and viam-server records the module's stderr as
     # error-level logs, so default to warning.
     kit_log_level: str = "warning"
+    # enable Kit's CPU profiler from startup and write its Chrome trace here.
+    # This path is process-global because Kit's profiler is process-global.
+    profiler_trace_path: Optional[str] = None
 
 
 class SimManager:
@@ -390,6 +394,28 @@ class SimManager:
                 )
             raise
 
+    @staticmethod
+    def _configure_file_profiler(trace_path: str) -> None:
+        path = Path(trace_path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch(exist_ok=True)
+        except OSError as error:
+            raise RuntimeError(
+                f"could not prepare Kit profiler trace file {path}: {error}"
+            ) from error
+
+        sys.argv.extend(
+            (
+                "--/app/profilerBackend=cpu",
+                "--/app/profileFromStart=1",
+                "--/plugins/carb.profiler-cpu.plugin/saveProfile=1",
+                "--/plugins/carb.profiler-cpu.plugin/compressProfile=1",
+                f"--/plugins/carb.profiler-cpu.plugin/filePath={path}",
+            )
+        )
+        LOGGER.info("Kit startup profiling enabled (trace_file=%s)", path)
+
     # ------------------------------------------------------------------
     # boot
     # ------------------------------------------------------------------
@@ -407,6 +433,8 @@ class SimManager:
             from isaacsim import SimulationApp  # isaac sim >= 4.5
         except ImportError:
             from omni.isaac.kit import SimulationApp  # older releases
+        if cfg.profiler_trace_path:
+            self._configure_file_profiler(cfg.profiler_trace_path)
 
         # quiet kit's console stream; unknown argv entries are forwarded to kit
         level = cfg.kit_log_level.capitalize()
