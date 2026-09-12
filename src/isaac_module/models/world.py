@@ -15,8 +15,6 @@ Attributes:
                                       an empty stage with a ground plane is used
   physics_dt / rendering_dt (float) - sim step sizes, default 1/60
   boot_timeout_sec (float) - how long to wait for kit to boot
-  ready_step_max_sec (float) - require a world step below this duration; 0 disables
-  ready_step_timeout_sec (float) - how long to wait for that fast step
   profile_trace_path (string) - absolute output path for a one-run Kit CPU trace
   props (list)                      - objects spawned into the scene at boot:
                                       {"name", "type": "cube"|"usd",
@@ -76,16 +74,6 @@ class IsaacWorld(Generic, EasyResource):
         cls, config: ComponentConfig
     ) -> Tuple[Sequence[str], Sequence[str]]:
         attrs = struct_to_dict(config.attributes)
-        for key in (
-            "physics_dt",
-            "rendering_dt",
-            "boot_timeout_sec",
-            "ready_step_timeout_sec",
-        ):
-            if key in attrs and float(attrs[key]) <= 0:
-                raise ValueError(f"{key} must be positive")
-        if "ready_step_max_sec" in attrs and float(attrs["ready_step_max_sec"]) < 0:
-            raise ValueError("ready_step_max_sec must be nonnegative")
         _profile_trace_path(attrs)
         return [], []
 
@@ -100,8 +88,6 @@ class IsaacWorld(Generic, EasyResource):
             usd_stage=attrs.get("usd_stage") or None,
             physics_dt=float(attrs.get("physics_dt", 1.0 / 60.0)),
             rendering_dt=float(attrs.get("rendering_dt", 1.0 / 60.0)),
-            ready_step_max=float(attrs.get("ready_step_max_sec", 10.0)),
-            ready_step_timeout=float(attrs.get("ready_step_timeout_sec", 600.0)),
             boot_timeout=float(attrs.get("boot_timeout_sec", 300.0)),
             kit_log_level=str(attrs.get("kit_log_level", "warning")),
             livestream_public_ip=str(attrs.get("livestream_public_ip", "")),
