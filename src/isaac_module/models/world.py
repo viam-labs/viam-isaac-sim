@@ -15,6 +15,7 @@ Attributes:
                                       an empty stage with a ground plane is used
   physics_dt / rendering_dt (float) - sim step sizes, default 1/60
   boot_timeout_sec (float) - how long to wait for kit to boot
+  scene_finalizer (string) - name of the component that releases first render
   profile_trace_path (string) - absolute output path for a one-run Kit CPU trace
   props (list)                      - objects spawned into the scene at boot:
                                       {"name", "type": "cube"|"usd",
@@ -58,6 +59,15 @@ def _profile_trace_path(attrs: Mapping[str, Any]) -> Optional[str]:
     return value
 
 
+def _scene_finalizer_name(attrs: Mapping[str, Any]) -> Optional[str]:
+    value = attrs.get("scene_finalizer")
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise ValueError("scene_finalizer must be a component name string")
+    return value
+
+
 class IsaacWorld(Generic, EasyResource):
     MODEL: ClassVar[Model] = Model(ModelFamily(NAMESPACE, FAMILY), "world")
 
@@ -75,6 +85,7 @@ class IsaacWorld(Generic, EasyResource):
     ) -> Tuple[Sequence[str], Sequence[str]]:
         attrs = struct_to_dict(config.attributes)
         _profile_trace_path(attrs)
+        _scene_finalizer_name(attrs)
         return [], []
 
     def reconfigure(
@@ -89,6 +100,7 @@ class IsaacWorld(Generic, EasyResource):
             physics_dt=float(attrs.get("physics_dt", 1.0 / 60.0)),
             rendering_dt=float(attrs.get("rendering_dt", 1.0 / 60.0)),
             boot_timeout=float(attrs.get("boot_timeout_sec", 300.0)),
+            scene_finalizer=_scene_finalizer_name(attrs),
             kit_log_level=str(attrs.get("kit_log_level", "warning")),
             livestream_public_ip=str(attrs.get("livestream_public_ip", "")),
             props=[dict(p) for p in attrs.get("props", [])],

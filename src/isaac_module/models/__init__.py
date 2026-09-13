@@ -1,1 +1,1 @@
-from . import world, arm, camera, base  # noqa: F401 - importing registers the models
+from . import arm, base, camera, scene_finalizer, world  # noqa: F401 - registers all models

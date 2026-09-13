@@ -21,6 +21,7 @@ What it is/does
 | Model | Viam API | What it does |
 |---|---|---|
 | `erh:isaac-sim:world` | `generic` | Boots Isaac Sim, opens the USD stage, runs the sim loop. Configure exactly one. |
+| `erh:isaac-sim:scene-finalizer` | `generic` | Defers the first render until configured scene-populating components finish. |
 | `erh:isaac-sim:arm` | `arm` | Spawns (or attaches to) an articulation - UR arms, Franka, or any USD - and exposes joint control. |
 | `erh:isaac-sim:camera` | `camera` | Creates (or attaches to) a camera prim and serves its RGB frames. |
 | `erh:isaac-sim:base` | `base` | Spawns a differential-drive robot (e.g. jetbot) and drives it. |
@@ -40,7 +41,8 @@ Known assets (usable via the `asset` attribute): `ur3e`, `ur5e`, `ur10`,
       "type": "generic",
       "attributes": {
         "headless": true,
-        "livestream": true
+        "livestream": true,
+        "scene_finalizer": "scene-ready"
       }
     },
     {
@@ -80,6 +82,14 @@ Known assets (usable via the `asset` attribute): `ur3e`, `ur5e`, `ur10`,
         "world": "sim-world",
         "asset": "jetbot"
       }
+    },
+    {
+      "name": "scene-ready",
+      "model": "erh:isaac-sim:scene-finalizer",
+      "type": "generic",
+      "attributes": {
+        "resources": ["my-ur20", "overhead-cam", "my-jetbot"]
+      }
     }
   ]
 }
@@ -88,6 +98,12 @@ Known assets (usable via the `asset` attribute): `ur3e`, `ur5e`, `ur10`,
 Every non-world component must set `"world"` to the world component's name.
 That attribute is also returned as an implicit dependency from each model's
 validate, so viam-server starts the world first - no `depends_on` needed.
+
+Set the optional world `scene_finalizer` to a finalizer component's name to
+defer the first `world.step(render=True)` until scene population completes.
+The finalizer's required `resources` list must name every arm, base, camera,
+or other component that populates the scene; it returns those names as resource
+dependencies. Without a finalizer, the world renders as before.
 
 Components are **placed with the standard frame config** (translations in mm,
 any orientation representation) - the spawn pose in Isaac and viam's frame
@@ -106,6 +122,7 @@ overrides orientation to aim at a point.
 | `usd_stage` | _empty stage + ground plane_ | USD file or omniverse:// URL to open |
 | `physics_dt` / `rendering_dt` | `1/60` | step sizes in seconds |
 | `boot_timeout_sec` | `300` | Isaac Sim can take a while on first boot |
+| `scene_finalizer` | _unset_ | finalizer component that releases the first render after configured scene population |
 | `profile_trace_path` | _disabled_ | absolute path for a compressed Kit CPU startup trace; restart the module after setting it |
 
 Set `profile_trace_path` for a short diagnostic run. Kit profiles from process
@@ -117,6 +134,12 @@ until shutdown.
 The world also supports `DoCommand`: `{"command": "status" | "play" | "pause" |
 "reset"}` and `{"command": "add_usd", "usd_path": "...", "prim_path":
 "/World/thing", "position": [x, y, z]}` to drop extra props into the scene.
+
+### scene-finalizer attributes
+
+`resources` (required) is the list of every scene-populating component that
+must finish before the first render. The finalizer signals the world directly;
+do not add it to a component's `world` attribute.
 
 ### arm attributes
 

@@ -74,6 +74,8 @@ class SimConfig:
     physics_dt: float = 1.0 / 60.0
     rendering_dt: float = 1.0 / 60.0
     boot_timeout: float = 300.0
+    # name of the component that signals scene population is complete
+    scene_finalizer: Optional[str] = None
     # IP the livestream advertises to clients; auto-detected if empty
     livestream_public_ip: str = ""
     # props to spawn into the scene at boot; each entry:
@@ -107,6 +109,7 @@ class SimManager:
         self._tasks: "queue.Queue[Tuple[str, bool, float, Callable[[], Any], Future]]" = queue.Queue()
         self._boot_requested = threading.Event()
         self._booted = threading.Event()
+        self._scene_finalized = threading.Event()
         self._boot_error: Optional[BaseException] = None
         self._stop = threading.Event()
         self._sim_thread_id: Optional[int] = None
@@ -144,6 +147,10 @@ class SimManager:
             raise RuntimeError(f"isaac sim failed to boot previously: {self._boot_error}")
 
         self.cfg = cfg
+        if cfg.scene_finalizer:
+            self._scene_finalized.clear()
+        else:
+            self._scene_finalized.set()
         self._boot_requested.set()
         started_at = time.monotonic()
         LOGGER.info("waiting for isaac sim boot (timeout_sec=%.1f)", cfg.boot_timeout)
@@ -158,6 +165,18 @@ class SimManager:
             )
             raise RuntimeError(f"isaac sim failed to boot: {self._boot_error}")
         LOGGER.info("isaac sim boot completed in %.3fs", time.monotonic() - started_at)
+
+    def finalize_scene(self, finalizer: str) -> None:
+        """Allow the expected finalizer to release the first world render."""
+        expected = self.cfg.scene_finalizer if self.cfg is not None else None
+        if expected is None:
+            raise RuntimeError("the world configuration does not expect a scene finalizer")
+        if finalizer != expected:
+            raise ValueError(
+                f"scene finalizer {finalizer!r} does not match expected finalizer {expected!r}"
+            )
+        self._scene_finalized.set()
+        LOGGER.info("scene finalizer completed: %s", finalizer)
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -181,10 +200,20 @@ class SimManager:
             self._booted.set()
             return
         self._booted.set()
-
         last = time.monotonic()
+
+        waiting_for_scene_finalizer = bool(
+            self.cfg is not None and self.cfg.scene_finalizer
+        )
         while not self._stop.is_set():
-            self._drain_tasks()
+            self._drain_tasks(
+                stop_when=self._scene_finalized if waiting_for_scene_finalizer else None
+            )
+            if waiting_for_scene_finalizer:
+                if not self._scene_finalized.is_set():
+                    self._scene_finalized.wait(timeout=0.01)
+                    continue
+                waiting_for_scene_finalizer = False
             now = time.monotonic()
             dt = now - last
             last = now
@@ -252,8 +281,10 @@ class SimManager:
         finally:
             self._restore_active_operation(previous_operation)
 
-    def _drain_tasks(self) -> None:
+    def _drain_tasks(self, *, stop_when: Optional[threading.Event] = None) -> None:
         while True:
+            if stop_when is not None and stop_when.is_set():
+                return
             try:
                 operation, trace, queued_at, fn, fut = self._tasks.get_nowait()
             except queue.Empty:

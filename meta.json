@@ -10,6 +10,11 @@
       "short_description": "Boots and manages the Isaac Sim world/stage"
     },
     {
+      "model": "erh:isaac-sim:scene-finalizer",
+      "api": "rdk:component:generic",
+      "short_description": "Defers first scene render until configured component population completes"
+    },
+    {
       "model": "erh:isaac-sim:arm",
       "api": "rdk:component:arm",
       "short_description": "A simulated arm (UR, Franka, or any articulation USD)"
