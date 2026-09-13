@@ -21,14 +21,17 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from grpclib.const import Status
+from grpclib.exceptions import GRPCError
 from viam.logging import getLogger
 
 LOGGER = getLogger("viam-isaac-sim")
 
-# Log the first few post-finalizer renders because RTX initialization currently
-# spans multiple frames. Three is an empirical diagnostic window; revisit the
-# exact count as more cold-start traces are collected.
-_POST_FINALIZER_DIAGNOSTIC_RENDER_COUNT = 3
+# RTX scene and sensor pipeline initialization currently spans multiple renders.
+# Three is an empirical warmup condition, not a stable renderer invariant;
+# revisit the exact readiness condition as more cold-start traces are collected.
+_POST_FINALIZER_WARMUP_RENDER_COUNT = 3
+_RENDERER_REJECTION_LOG_INTERVAL_SEC = 30.0
 
 # Assets shipped on the Isaac Sim nucleus/content server, addressable by a
 # short name in component config. Paths are relative to the assets root;
@@ -115,6 +118,8 @@ class SimManager:
         self._boot_requested = threading.Event()
         self._booted = threading.Event()
         self._scene_finalized = threading.Event()
+        self._renderer_ready = threading.Event()
+        self._renderer_ready.set()
         self._boot_error: Optional[BaseException] = None
         self._stop = threading.Event()
         self._sim_thread_id: Optional[int] = None
@@ -132,6 +137,11 @@ class SimManager:
         self._active_operation_lock = threading.Lock()
         self._active_operation: Optional[str] = None
         self._active_operation_started_at = 0.0
+        self._post_finalizer_render_count = 0
+        self._renderer_rejection_lock = threading.Lock()
+        self._renderer_rejected_calls = 0
+        self._last_renderer_rejection_log_at = 0.0
+        self._last_renderer_rejection_log_count = 0
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -154,8 +164,10 @@ class SimManager:
         self.cfg = cfg
         if cfg.scene_finalizer:
             self._scene_finalized.clear()
+            self._renderer_ready.clear()
         else:
             self._scene_finalized.set()
+            self._renderer_ready.set()
         self._boot_requested.set()
         started_at = time.monotonic()
         LOGGER.info("waiting for isaac sim boot (timeout_sec=%.1f)", cfg.boot_timeout)
@@ -182,6 +194,66 @@ class SimManager:
             )
         self._scene_finalized.set()
         LOGGER.info("scene finalizer completed: %s", finalizer)
+        if self.mock:
+            self._renderer_ready.set()
+            LOGGER.info("isaac renderer warmup skipped in mock mode")
+            return
+
+    def _renderer_state(self) -> str:
+        if self._renderer_ready.is_set():
+            return "ready"
+        if self._scene_finalized.is_set():
+            return "warming"
+        return "populating"
+
+    def _require_renderer_ready(self, operation: str) -> None:
+        if self._renderer_ready.is_set():
+            return
+        now = time.monotonic()
+        should_log = False
+        with self._renderer_rejection_lock:
+            if self._renderer_ready.is_set():
+                return
+            self._renderer_rejected_calls += 1
+            total = self._renderer_rejected_calls
+            if now - self._last_renderer_rejection_log_at >= _RENDERER_REJECTION_LOG_INTERVAL_SEC:
+                since_last = total - self._last_renderer_rejection_log_count
+                self._last_renderer_rejection_log_at = now
+                self._last_renderer_rejection_log_count = total
+                should_log = True
+        state = self._renderer_state()
+        if should_log:
+            LOGGER.info(
+                "isaac renderer not ready; rejecting operational calls "
+                "(operation=%s state=%s renders_completed=%d renders_required=%d "
+                "rejected_since_last_log=%d rejected_total=%d)",
+                operation,
+                state,
+                self._post_finalizer_render_count,
+                _POST_FINALIZER_WARMUP_RENDER_COUNT,
+                since_last,
+                total,
+            )
+        raise GRPCError(
+            Status.UNAVAILABLE,
+            f"Isaac renderer is {state}; cannot {operation}; "
+            "retry after post-finalizer renders complete "
+            f"({self._post_finalizer_render_count}/"
+            f"{_POST_FINALIZER_WARMUP_RENDER_COUNT})",
+        )
+
+    def _mark_renderer_ready(self) -> None:
+        if self._renderer_ready.is_set():
+            return
+        self._renderer_ready.set()
+        with self._renderer_rejection_lock:
+            rejected = self._renderer_rejected_calls
+        LOGGER.info(
+            "isaac renderer ready after %d post-finalizer renders "
+            "(rejected_calls=%d)",
+            _POST_FINALIZER_WARMUP_RENDER_COUNT,
+            rejected,
+        )
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -206,11 +278,11 @@ class SimManager:
             return
         self._booted.set()
         last = time.monotonic()
+        self._post_finalizer_render_count = 0
 
         waiting_for_scene_finalizer = bool(
             self.cfg is not None and self.cfg.scene_finalizer
         )
-        post_finalizer_render_count = 0
         while not self._stop.is_set():
             self._drain_tasks(
                 stop_when=self._scene_finalized if waiting_for_scene_finalizer else None
@@ -230,9 +302,14 @@ class SimManager:
                 time.sleep(0.01)
             else:
                 render_ordinal = None
-                if self.cfg is not None and self.cfg.scene_finalizer:
-                    post_finalizer_render_count += 1
-                    if post_finalizer_render_count <= _POST_FINALIZER_DIAGNOSTIC_RENDER_COUNT:
+                if (
+                    self.cfg is not None
+                    and self.cfg.scene_finalizer
+                    and not self._renderer_ready.is_set()
+                ):
+                    self._post_finalizer_render_count += 1
+                    post_finalizer_render_count = self._post_finalizer_render_count
+                    if post_finalizer_render_count <= _POST_FINALIZER_WARMUP_RENDER_COUNT:
                         render_ordinal = post_finalizer_render_count
                         LOGGER.info(
                             "post-finalizer world render starting "
@@ -257,6 +334,8 @@ class SimManager:
                     elapsed,
                     self.cfg.scene_finalizer,
                 )
+                if render_ordinal == _POST_FINALIZER_WARMUP_RENDER_COUNT:
+                    self._mark_renderer_ready()
             if elapsed >= 1.0:
                 LOGGER.warning("slow isaac sim world step (elapsed_sec=%.3f)", elapsed)
         if self._sim_app is not None:
@@ -359,8 +438,11 @@ class SimManager:
         *,
         operation: str = "sim task",
         trace: bool = False,
+        allow_during_renderer_warmup: bool = False,
     ) -> Any:
         """Run fn on the sim thread and return its result."""
+        if not allow_during_renderer_warmup:
+            self._require_renderer_ready(operation)
         if threading.get_ident() == self._sim_thread_id:
             return fn()
         fut: Future = Future()
@@ -573,7 +655,13 @@ class SimManager:
             "mock": self.mock,
             "error": str(self._boot_error) if self._boot_error else "",
         }
-        if self._booted.is_set() and not self.mock:
+        out["renderer_state"] = self._renderer_state()
+        if self.cfg is not None and self.cfg.scene_finalizer:
+            out["warmup_renders_completed"] = self._post_finalizer_render_count
+            out["warmup_renders_required"] = _POST_FINALIZER_WARMUP_RENDER_COUNT
+            with self._renderer_rejection_lock:
+                out["renderer_rejected_calls"] = self._renderer_rejected_calls
+        if self._booted.is_set() and not self.mock and self._renderer_ready.is_set():
             out["playing"] = self.run(
                 lambda: bool(self.world.is_playing()), operation="read world playing state"
             )
@@ -700,6 +788,7 @@ class SimManager:
                 timeout=120.0,
                 operation=f"create arm {name}",
                 trace=True,
+                allow_during_renderer_warmup=True,
             )
         return self._cached_handle("arm", name, attrs, factory)
 
@@ -749,6 +838,7 @@ class SimManager:
                 timeout=120.0,
                 operation=f"create camera {name}",
                 trace=True,
+                allow_during_renderer_warmup=True,
             )
         return self._cached_handle("camera", name, attrs, factory)
 
@@ -845,6 +935,7 @@ class SimManager:
                 timeout=120.0,
                 operation=f"create base {name}",
                 trace=True,
+                allow_during_renderer_warmup=True,
             )
         return self._cached_handle("base", name, attrs, factory)
 
@@ -1035,16 +1126,19 @@ class IsaacArmHandle(ArmHandle):
             operation="read arm joint positions",
         )
 
-    def set_joint_targets(self, positions: List[float]) -> None:
+    def _apply_joint_targets(self, positions: List[float]) -> None:
         import numpy as np
 
-        def _apply():
-            action = self._sim._isaac.ArticulationAction(
-                joint_positions=np.array(positions, dtype=float)
-            )
-            self._art.apply_action(action)
+        action = self._sim._isaac.ArticulationAction(
+            joint_positions=np.array(positions, dtype=float)
+        )
+        self._art.apply_action(action)
 
-        self._sim.run(_apply, operation="set arm joint targets")
+    def set_joint_targets(self, positions: List[float]) -> None:
+        self._sim.run(
+            lambda: self._apply_joint_targets(positions),
+            operation="set arm joint targets",
+        )
 
     def is_moving(self) -> bool:
         def _check():
@@ -1056,9 +1150,15 @@ class IsaacArmHandle(ArmHandle):
         return self._sim.run(_check, operation="read arm moving state")
 
     def stop(self) -> None:
-        # hold the current position
-        current = self.get_joint_positions()
-        self.set_joint_targets(current)
+        def _hold() -> None:
+            current = [float(v) for v in self._art.get_joint_positions()]
+            self._apply_joint_targets(current)
+
+        self._sim.run(
+            _hold,
+            operation="stop arm",
+            allow_during_renderer_warmup=True,
+        )
 
     def get_end_pose(self):
         if self._ee is None:
@@ -1228,11 +1328,13 @@ class IsaacBaseHandle(BaseHandle):
             LOGGER.exception("error driving base")
 
     def set_velocity(self, linear_mps: float, angular_rps: float) -> None:
+        self._sim._require_renderer_ready("set base velocity")
         with self._lock:
             self._cmd = (float(linear_mps), float(angular_rps))
 
     def stop(self) -> None:
-        self.set_velocity(0.0, 0.0)
+        with self._lock:
+            self._cmd = (0.0, 0.0)
 
     def is_moving(self) -> bool:
         with self._lock:

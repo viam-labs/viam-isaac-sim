@@ -3,15 +3,17 @@ import time
 from concurrent.futures import Future
 from types import SimpleNamespace
 
+from grpclib.const import Status
+from grpclib.exceptions import GRPCError
 import pytest
 from viam.proto.app.robot import ComponentConfig
 from viam.utils import dict_to_struct
 
 import isaac_module.models.scene_finalizer as finalizer_model
-from isaac_module.models.scene_finalizer import IsaacSceneFinalizer
 import isaac_module.models.world as world_model
+from isaac_module.models.scene_finalizer import IsaacSceneFinalizer
 from isaac_module.models.world import IsaacWorld
-from isaac_module.sim_manager import SimConfig, SimManager
+from isaac_module.sim_manager import IsaacBaseHandle, SimConfig, SimManager
 
 
 def _config(name: str, attrs: dict) -> ComponentConfig:
@@ -81,8 +83,12 @@ def test_direct_finalizer_signal_precedes_queued_work():
     rendered = threading.Event()
 
     class World:
+        def __init__(self):
+            self.render_count = 0
+
         def step(self, *, render):
             assert render is True
+            self.render_count += 1
             events.append("render")
             rendered.set()
 
@@ -94,6 +100,7 @@ def test_direct_finalizer_signal_precedes_queued_work():
 
     manager = SimManager()
     manager.cfg = SimConfig(scene_finalizer="scene-ready")
+    manager._renderer_ready.clear()
     manager._boot = lambda: setattr(manager, "world", World())
     manager._boot_requested.set()
     _queued_task(manager, "first request", first_request)
@@ -110,12 +117,44 @@ def test_direct_finalizer_signal_precedes_queued_work():
         release_first.set()
         assert rendered.wait(timeout=1)
         assert ordinary_completed.wait(timeout=1)
+        assert manager._renderer_ready.wait(timeout=1)
         assert events[:4] == ["first-start", "first-end", "render", "ordinary"]
     finally:
         release_first.set()
         manager.request_stop()
         thread.join(timeout=1)
         assert not thread.is_alive()
+
+
+def test_run_rejects_operations_but_allows_setup_during_renderer_warmup():
+    manager = SimManager()
+    manager.cfg = SimConfig(scene_finalizer="scene-ready")
+    manager._scene_finalized.set()
+    manager._renderer_ready.clear()
+    manager._sim_thread_id = threading.get_ident()
+
+    with pytest.raises(GRPCError) as error:
+        manager.run(lambda: "operation", operation="read camera RGB")
+
+    assert error.value.status is Status.UNAVAILABLE
+    assert "read camera RGB" in error.value.message
+    assert manager._tasks.empty()
+    assert manager.run(
+        lambda: "setup",
+        operation="create camera",
+        allow_during_renderer_warmup=True,
+    ) == "setup"
+    assert manager.status() == {
+        "booted": False,
+        "mock": False,
+        "error": "",
+        "renderer_state": "warming",
+        "warmup_renders_completed": 0,
+        "warmup_renders_required": 3,
+        "renderer_rejected_calls": 1,
+    }
+    manager._mark_renderer_ready()
+    assert manager.run(lambda: "operation", operation="read camera RGB") == "operation"
 
 
 def test_world_without_finalizer_renders_immediately():
@@ -138,3 +177,26 @@ def test_world_without_finalizer_renders_immediately():
         manager.request_stop()
         thread.join(timeout=1)
         assert not thread.is_alive()
+
+
+def test_base_motion_is_rejected_during_warmup_but_stop_is_allowed():
+    manager = SimManager()
+    manager.cfg = SimConfig(scene_finalizer="scene-ready")
+    manager._scene_finalized.set()
+    manager._renderer_ready.clear()
+    base = IsaacBaseHandle(
+        manager,
+        robot=None,
+        controller=None,
+        wheel_radius=0.1,
+        wheel_base=0.2,
+    )
+
+    with pytest.raises(GRPCError) as error:
+        base.set_velocity(1.0, 0.5)
+
+    assert error.value.status is Status.UNAVAILABLE
+    assert not base.is_moving()
+    base._cmd = (1.0, 0.5)
+    base.stop()
+    assert not base.is_moving()

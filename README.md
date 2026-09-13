@@ -142,8 +142,11 @@ The world also supports `DoCommand`: `{"command": "status" | "play" | "pause" |
 `world` (required) names the world whose first render the finalizer releases.
 `resources` (required) lists every scene-populating component that must finish
 before that render.
-The first three post-finalizer renders are logged as an empirical diagnostic
-window; that count may change as additional renderer traces clarify startup.
+The first three post-finalizer renders are an empirical warmup condition; that
+count may change as additional renderer traces clarify startup. Until those
+renders complete, simulator-backed operations return gRPC `UNAVAILABLE`
+without entering the simulator queue. World status remains available and
+reports renderer state, completed/required renders, and rejected-call count.
 
 ### arm attributes
 
