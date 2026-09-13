@@ -29,6 +29,7 @@ class IsaacSceneFinalizer(Generic, EasyResource):
         cls, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]
     ) -> Self:
         finalizer = cls(config.name)
+        # does reconfigure here run after validate_config? is validate -> reconfigure the two-phase setup that I've been looking for? or are validate calls not graph-ordered
         finalizer.reconfigure(config, dependencies)
         return finalizer
 
@@ -52,4 +53,5 @@ class IsaacSceneFinalizer(Generic, EasyResource):
     def reconfigure(
         self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]
     ) -> None:
+        # todo: if we use dependencies instead of 'resources' list, we can cut everything in this class except this function right?
         SimManager.get().finalize_scene(self.name)
