@@ -21,6 +21,12 @@ def test_profile_trace_path_must_be_absolute():
     IsaacWorld.validate_config(_config({"profile_trace_path": "/tmp/boot.gz"}))
 
 
+def test_world_timing_values_must_be_positive():
+    for key in ("physics_dt", "rendering_dt", "boot_timeout_sec"):
+        with pytest.raises(ValueError, match=f"{key} must be positive"):
+            IsaacWorld.validate_config(_config({key: 0}))
+
+
 def test_file_profiler_prepares_trace_and_enables_kit_flags(monkeypatch, tmp_path):
     argv = ["src/main.py"]
     monkeypatch.setattr(sys, "argv", argv)

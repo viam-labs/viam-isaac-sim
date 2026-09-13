@@ -88,6 +88,7 @@ Known assets (usable via the `asset` attribute): `ur3e`, `ur5e`, `ur10`,
       "model": "erh:isaac-sim:scene-finalizer",
       "type": "generic",
       "attributes": {
+        "world": "sim-world",
         "resources": ["my-ur20", "overhead-cam", "my-jetbot"]
       }
     }
@@ -101,9 +102,10 @@ validate, so viam-server starts the world first - no `depends_on` needed.
 
 Set the optional world `scene_finalizer` to a finalizer component's name to
 defer the first `world.step(render=True)` until scene population completes.
-The finalizer's required `resources` list must name every arm, base, camera,
-or other component that populates the scene; it returns those names as resource
-dependencies. Without a finalizer, the world renders as before.
+The finalizer requires the same `world` plus a `resources` list naming every
+arm, base, camera, or other component that populates the scene. It returns the
+world and those resources as dependencies. Without a finalizer, the world
+renders as before.
 
 Components are **placed with the standard frame config** (translations in mm,
 any orientation representation) - the spawn pose in Isaac and viam's frame
@@ -137,9 +139,9 @@ The world also supports `DoCommand`: `{"command": "status" | "play" | "pause" |
 
 ### scene-finalizer attributes
 
-`resources` (required) is the list of every scene-populating component that
-must finish before the first render. The finalizer signals the world directly;
-do not add it to a component's `world` attribute.
+`world` (required) names the world whose first render the finalizer releases.
+`resources` (required) lists every scene-populating component that must finish
+before that render.
 
 ### arm attributes
 

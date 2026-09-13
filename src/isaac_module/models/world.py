@@ -84,6 +84,9 @@ class IsaacWorld(Generic, EasyResource):
         cls, config: ComponentConfig
     ) -> Tuple[Sequence[str], Sequence[str]]:
         attrs = struct_to_dict(config.attributes)
+        for key in ("physics_dt", "rendering_dt", "boot_timeout_sec"):
+            if key in attrs and float(attrs[key]) <= 0:
+                raise ValueError(f"{key} must be positive")
         _profile_trace_path(attrs)
         _scene_finalizer_name(attrs)
         return [], []

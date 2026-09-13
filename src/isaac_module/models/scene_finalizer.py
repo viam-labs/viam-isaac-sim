@@ -1,6 +1,7 @@
 """erh:isaac-sim:scene-finalizer - signals completed scene population.
 
 Attributes:
+  world (string, required) - world component whose first render is released
   resources (list[string], required) - every scene-populating component that
                                         must finish before the first render
 """
@@ -35,14 +36,18 @@ class IsaacSceneFinalizer(Generic, EasyResource):
     def validate_config(
         cls, config: ComponentConfig
     ) -> Tuple[Sequence[str], Sequence[str]]:
-        resources = struct_to_dict(config.attributes).get("resources")
+        attrs = struct_to_dict(config.attributes)
+        world = attrs.get("world")
+        if not isinstance(world, str) or not world:
+            raise ValueError(f'{config.name}: set "world" to the world component name')
+        resources = attrs.get("resources")
         if not isinstance(resources, list) or not all(
             isinstance(resource, str) and resource for resource in resources
         ):
             raise ValueError(
                 f'{config.name}: set "resources" to a list of scene-populating component names'
             )
-        return resources, []
+        return [world, *resources], []
 
     def reconfigure(
         self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]

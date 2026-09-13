@@ -31,17 +31,31 @@ def test_scene_finalizer_declares_scene_populators_and_signals_manager(monkeypat
         lambda: SimpleNamespace(finalize_scene=calls.append),
     )
 
-    assert IsaacSceneFinalizer.validate_config(
-        _config("scene-ready", {"resources": ["robot", "camera"]})
-    ) == (["robot", "camera"], [])
-    finalizer.reconfigure(_config("scene-ready", {"resources": ["robot", "camera"]}), {})
+    config = _config(
+        "scene-ready",
+        {"world": "sim-world", "resources": ["robot", "camera"]},
+    )
+    assert IsaacSceneFinalizer.validate_config(config) == (
+        ["sim-world", "robot", "camera"],
+        [],
+    )
+    finalizer.reconfigure(config, {})
 
     assert calls == ["scene-ready"]
 
 
 def test_scene_finalizer_rejects_missing_populators():
     with pytest.raises(ValueError, match="resources"):
-        IsaacSceneFinalizer.validate_config(_config("scene-ready", {}))
+        IsaacSceneFinalizer.validate_config(
+            _config("scene-ready", {"world": "sim-world"})
+        )
+
+
+def test_scene_finalizer_rejects_missing_world():
+    with pytest.raises(ValueError, match="world"):
+        IsaacSceneFinalizer.validate_config(
+            _config("scene-ready", {"resources": ["robot"]})
+        )
 
 
 def test_world_configures_named_scene_finalizer(monkeypatch):
@@ -59,8 +73,10 @@ def test_world_configures_named_scene_finalizer(monkeypatch):
     assert configured[0].scene_finalizer == "scene-ready"
 
 
-def test_finalizer_signal_precedes_first_render_even_with_queued_work():
+def test_direct_finalizer_signal_precedes_queued_work():
     events = []
+    first_started = threading.Event()
+    release_first = threading.Event()
     ordinary_completed = threading.Event()
     rendered = threading.Event()
 
@@ -70,15 +86,17 @@ def test_finalizer_signal_precedes_first_render_even_with_queued_work():
             events.append("render")
             rendered.set()
 
+    def first_request():
+        events.append("first-start")
+        first_started.set()
+        release_first.wait(timeout=1)
+        events.append("first-end")
+
     manager = SimManager()
     manager.cfg = SimConfig(scene_finalizer="scene-ready")
     manager._boot = lambda: setattr(manager, "world", World())
     manager._boot_requested.set()
-    _queued_task(
-        manager,
-        "finalize scene",
-        lambda: (events.append("finalize"), manager.finalize_scene("scene-ready")),
-    )
+    _queued_task(manager, "first request", first_request)
     _queued_task(
         manager,
         "ordinary request",
@@ -87,10 +105,14 @@ def test_finalizer_signal_precedes_first_render_even_with_queued_work():
     thread = threading.Thread(target=manager.main_loop, daemon=True)
     thread.start()
     try:
+        assert first_started.wait(timeout=1)
+        manager.finalize_scene("scene-ready")
+        release_first.set()
         assert rendered.wait(timeout=1)
         assert ordinary_completed.wait(timeout=1)
-        assert events[:3] == ["finalize", "render", "ordinary"]
+        assert events[:4] == ["first-start", "first-end", "render", "ordinary"]
     finally:
+        release_first.set()
         manager.request_stop()
         thread.join(timeout=1)
         assert not thread.is_alive()
