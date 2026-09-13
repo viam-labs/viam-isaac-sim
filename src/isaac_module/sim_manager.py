@@ -25,6 +25,11 @@ from viam.logging import getLogger
 
 LOGGER = getLogger("viam-isaac-sim")
 
+# Log the first few post-finalizer renders because RTX initialization currently
+# spans multiple frames. Three is an empirical diagnostic window; revisit the
+# exact count as more cold-start traces are collected.
+_POST_FINALIZER_DIAGNOSTIC_RENDER_COUNT = 3
+
 # Assets shipped on the Isaac Sim nucleus/content server, addressable by a
 # short name in component config. Paths are relative to the assets root;
 # where isaac 5.0 moved an asset, the 5.0 path is listed first with the 4.x
@@ -205,6 +210,7 @@ class SimManager:
         waiting_for_scene_finalizer = bool(
             self.cfg is not None and self.cfg.scene_finalizer
         )
+        post_finalizer_render_count = 0
         while not self._stop.is_set():
             self._drain_tasks(
                 stop_when=self._scene_finalized if waiting_for_scene_finalizer else None
@@ -223,6 +229,17 @@ class SimManager:
                     cb(dt)
                 time.sleep(0.01)
             else:
+                render_ordinal = None
+                if self.cfg is not None and self.cfg.scene_finalizer:
+                    post_finalizer_render_count += 1
+                    if post_finalizer_render_count <= _POST_FINALIZER_DIAGNOSTIC_RENDER_COUNT:
+                        render_ordinal = post_finalizer_render_count
+                        LOGGER.info(
+                            "post-finalizer world render starting "
+                            "(ordinal=%d finalizer=%s)",
+                            render_ordinal,
+                            self.cfg.scene_finalizer,
+                        )
                 previous_operation = self._set_active_operation("world step")
                 try:
                     self.world.step(render=True)
@@ -232,6 +249,14 @@ class SimManager:
                 finally:
                     self._restore_active_operation(previous_operation)
             elapsed = time.monotonic() - step_started_at
+            if not self.mock and render_ordinal is not None:
+                LOGGER.info(
+                    "post-finalizer world render completed "
+                    "(ordinal=%d elapsed_sec=%.3f finalizer=%s)",
+                    render_ordinal,
+                    elapsed,
+                    self.cfg.scene_finalizer,
+                )
             if elapsed >= 1.0:
                 LOGGER.warning("slow isaac sim world step (elapsed_sec=%.3f)", elapsed)
         if self._sim_app is not None:
