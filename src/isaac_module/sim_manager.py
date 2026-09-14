@@ -108,10 +108,15 @@ class SimManager:
         self._tasks: "queue.Queue[Tuple[Callable[[], Any], Future]]" = queue.Queue()
         self._boot_requested = threading.Event()
         self._booted = threading.Event()
+
+        # `_scene_finalized` means all scene changes are finished; it's set by the finalizer model and
+        # isn't used unless wait_for_finalizer=true.
         self._scene_finalized = threading.Event()
         self._scene_finalized.set()
+        # `_ready` comes after `_scene_finalized` and means the world has passed its cold start slow steps
         self._ready = threading.Event()
         self._ready.set()
+
         self._boot_error: Optional[BaseException] = None
         self._stop = threading.Event()
         self._sim_thread_id: Optional[int] = None
@@ -226,6 +231,7 @@ class SimManager:
                     fut.set_exception(e)
 
     def _require_ready(self) -> None:
+        "error if the scene isn't ready yet; this prevents timeouts on cold starts"
         if not self._ready.is_set():
             raise GRPCError(
                 Status.UNAVAILABLE, "Isaac Sim is initializing; retry shortly"
