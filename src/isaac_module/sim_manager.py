@@ -20,9 +20,13 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from grpclib.const import Status
+from grpclib.exceptions import GRPCError
 from viam.logging import getLogger
 
 LOGGER = getLogger("viam-isaac-sim")
+
+_POST_FINALIZER_WARMUP_STEPS = 3
 
 # Assets shipped on the Isaac Sim nucleus/content server, addressable by a
 # short name in component config. Paths are relative to the assets root;
@@ -106,6 +110,8 @@ class SimManager:
         self._booted = threading.Event()
         self._scene_finalized = threading.Event()
         self._scene_finalized.set()
+        self._ready = threading.Event()
+        self._ready.set()
         self._boot_error: Optional[BaseException] = None
         self._stop = threading.Event()
         self._sim_thread_id: Optional[int] = None
@@ -142,8 +148,10 @@ class SimManager:
         self.cfg = cfg
         if cfg.wait_for_finalizer:
             self._scene_finalized.clear()
+            self._ready.clear()
         else:
             self._scene_finalized.set()
+            self._ready.set()
         self._boot_requested.set()
         if not self._booted.wait(timeout=cfg.boot_timeout):
             raise TimeoutError(f"isaac sim did not boot within {cfg.boot_timeout}s")
@@ -177,6 +185,7 @@ class SimManager:
             return
         self._booted.set()
 
+        warmup_steps = 0
         last = time.monotonic()
         while not self._stop.is_set():
             self._drain_tasks()
@@ -193,6 +202,10 @@ class SimManager:
                 time.sleep(0.01)
             else:
                 self.world.step(render=True)
+            if not self._ready.is_set():
+                warmup_steps += 1
+                if warmup_steps >= _POST_FINALIZER_WARMUP_STEPS:
+                    self._ready.set()
 
         if self._sim_app is not None:
             try:
@@ -212,8 +225,22 @@ class SimManager:
                 except BaseException as e:
                     fut.set_exception(e)
 
-    def run(self, fn: Callable[[], Any], timeout: float = 30.0) -> Any:
+    def _require_ready(self) -> None:
+        if not self._ready.is_set():
+            raise GRPCError(
+                Status.UNAVAILABLE, "Isaac Sim is initializing; retry shortly"
+            )
+
+    def run(
+        self,
+        fn: Callable[[], Any],
+        timeout: float = 30.0,
+        *,
+        allow_during_initialization: bool = False,
+    ) -> Any:
         """Run fn on the sim thread and return its result."""
+        if not allow_during_initialization:
+            self._require_ready()
         if threading.get_ident() == self._sim_thread_id:
             return fn()
         fut: Future = Future()
@@ -366,7 +393,8 @@ class SimManager:
             "mock": self.mock,
             "error": str(self._boot_error) if self._boot_error else "",
         }
-        if self._booted.is_set() and not self.mock:
+        out["ready"] = self._ready.is_set()
+        if self._booted.is_set() and not self.mock and self._ready.is_set():
             out["playing"] = self.run(lambda: bool(self.world.is_playing()))
             out["sim_time"] = self.run(lambda: float(self.world.current_time))
         return out
@@ -465,7 +493,9 @@ class SimManager:
             factory = lambda: MockArmHandle(name, attrs)
         else:
             factory = lambda: self.run(
-                lambda: self._create_arm_isaac(name, attrs), timeout=120.0
+                lambda: self._create_arm_isaac(name, attrs),
+                timeout=120.0,
+                allow_during_initialization=True,
             )
         return self._cached_handle("arm", name, attrs, factory)
 
@@ -499,7 +529,9 @@ class SimManager:
             factory = lambda: MockCameraHandle(name, attrs)
         else:
             factory = lambda: self.run(
-                lambda: self._create_camera_isaac(name, attrs), timeout=120.0
+                lambda: self._create_camera_isaac(name, attrs),
+                timeout=120.0,
+                allow_during_initialization=True,
             )
         return self._cached_handle("camera", name, attrs, factory)
 
@@ -587,7 +619,9 @@ class SimManager:
             factory = lambda: MockBaseHandle(name, attrs)
         else:
             factory = lambda: self.run(
-                lambda: self._create_base_isaac(name, attrs), timeout=120.0
+                lambda: self._create_base_isaac(name, attrs),
+                timeout=120.0,
+                allow_during_initialization=True,
             )
         return self._cached_handle("base", name, attrs, factory)
 
@@ -769,16 +803,16 @@ class IsaacArmHandle(ArmHandle):
     def get_joint_positions(self) -> List[float]:
         return self._sim.run(lambda: [float(v) for v in self._art.get_joint_positions()])
 
-    def set_joint_targets(self, positions: List[float]) -> None:
+    def _apply_joint_targets(self, positions: List[float]) -> None:
         import numpy as np
 
-        def _apply():
-            action = self._sim._isaac.ArticulationAction(
-                joint_positions=np.array(positions, dtype=float)
-            )
-            self._art.apply_action(action)
+        action = self._sim._isaac.ArticulationAction(
+            joint_positions=np.array(positions, dtype=float)
+        )
+        self._art.apply_action(action)
 
-        self._sim.run(_apply)
+    def set_joint_targets(self, positions: List[float]) -> None:
+        self._sim.run(lambda: self._apply_joint_targets(positions))
 
     def is_moving(self) -> bool:
         def _check():
@@ -790,9 +824,11 @@ class IsaacArmHandle(ArmHandle):
         return self._sim.run(_check)
 
     def stop(self) -> None:
-        # hold the current position
-        current = self.get_joint_positions()
-        self.set_joint_targets(current)
+        def _hold() -> None:
+            current = [float(v) for v in self._art.get_joint_positions()]
+            self._apply_joint_targets(current)
+
+        self._sim.run(_hold, allow_during_initialization=True)
 
     def get_end_pose(self):
         if self._ee is None:
@@ -939,11 +975,13 @@ class IsaacBaseHandle(BaseHandle):
             LOGGER.exception("error driving base")
 
     def set_velocity(self, linear_mps: float, angular_rps: float) -> None:
+        self._sim._require_ready()
         with self._lock:
             self._cmd = (float(linear_mps), float(angular_rps))
 
     def stop(self) -> None:
-        self.set_velocity(0.0, 0.0)
+        with self._lock:
+            self._cmd = (0.0, 0.0)
 
     def is_moving(self) -> bool:
         with self._lock:

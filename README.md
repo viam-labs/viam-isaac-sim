@@ -115,6 +115,8 @@ The world also supports `DoCommand`: `{"command": "status" | "play" | "pause" |
 For scenes populated by component setup, set `wait_for_finalizer` on the world
 and add an `erh:isaac-sim:scene-finalizer` component whose `depends_on` lists
 every scene-populating component.
+While the first three post-finalizer world steps complete, operational calls
+return `UNAVAILABLE` with an initializing error instead of entering the sim queue.
 
 ### arm attributes
 
