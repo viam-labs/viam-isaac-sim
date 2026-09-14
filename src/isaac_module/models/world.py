@@ -30,6 +30,7 @@ DoCommand:
    "position": [x, y, z]}
 """
 
+import asyncio
 from typing import Any, ClassVar, Dict, Mapping, Optional, Sequence, Tuple
 
 from typing_extensions import Self
@@ -94,15 +95,15 @@ class IsaacWorld(Generic, EasyResource):
         sim = SimManager.get()
         cmd = str(command.get("command", ""))
         if cmd == "status":
-            return sim.status()
+            return await asyncio.to_thread(sim.status)
         if cmd == "play":
-            sim.play()
+            await asyncio.to_thread(sim.play)
             return {"ok": True}
         if cmd == "pause":
-            sim.pause()
+            await asyncio.to_thread(sim.pause)
             return {"ok": True}
         if cmd == "reset":
-            sim.reset()
+            await asyncio.to_thread(sim.reset)
             return {"ok": True}
         if cmd == "add_usd":
             usd_path = str(command.get("usd_path", ""))
@@ -110,8 +111,11 @@ class IsaacWorld(Generic, EasyResource):
             if not usd_path or not prim_path:
                 raise ValueError("add_usd requires usd_path and prim_path")
             position = command.get("position") or [0.0, 0.0, 0.0]
-            sim.add_usd_reference(
-                usd_path, prim_path, tuple(float(v) for v in position)
+            await asyncio.to_thread(
+                sim.add_usd_reference,
+                usd_path,
+                prim_path,
+                tuple(float(v) for v in position),
             )
             return {"ok": True}
         raise ValueError(
