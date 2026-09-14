@@ -15,6 +15,7 @@ Attributes:
                                       an empty stage with a ground plane is used
   physics_dt / rendering_dt (float) - sim step sizes, default 1/60
   boot_timeout_sec (float)          - how long to wait for kit to boot
+  wait_for_finalizer (bool)         - defer world steps until a scene finalizer runs
   kit_log_level (string)            - kit console verbosity, default "warning"
   props (list)                      - objects spawned into the scene at boot:
                                       {"name", "type": "cube"|"usd",
@@ -65,6 +66,8 @@ class IsaacWorld(Generic, EasyResource):
         for key in ("physics_dt", "rendering_dt", "boot_timeout_sec"):
             if key in attrs and float(attrs[key]) <= 0:
                 raise ValueError(f"{key} must be positive")
+        if not isinstance(attrs.get("wait_for_finalizer", False), bool):
+            raise ValueError("wait_for_finalizer must be a boolean")
         return [], []
 
     def reconfigure(
@@ -80,6 +83,7 @@ class IsaacWorld(Generic, EasyResource):
             rendering_dt=float(attrs.get("rendering_dt", 1.0 / 60.0)),
             boot_timeout=float(attrs.get("boot_timeout_sec", 300.0)),
             kit_log_level=str(attrs.get("kit_log_level", "warning")),
+            wait_for_finalizer=attrs.get("wait_for_finalizer", False),
             livestream_public_ip=str(attrs.get("livestream_public_ip", "")),
             props=[dict(p) for p in attrs.get("props", [])],
         )

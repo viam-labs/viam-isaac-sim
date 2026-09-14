@@ -106,10 +106,15 @@ overrides orientation to aim at a point.
 | `usd_stage` | _empty stage + ground plane_ | USD file or omniverse:// URL to open |
 | `physics_dt` / `rendering_dt` | `1/60` | step sizes in seconds |
 | `boot_timeout_sec` | `300` | Isaac Sim can take a while on first boot |
+| `wait_for_finalizer` | `false` | defer world steps until a scene-finalizer component runs |
 
 The world also supports `DoCommand`: `{"command": "status" | "play" | "pause" |
 "reset"}` and `{"command": "add_usd", "usd_path": "...", "prim_path":
 "/World/thing", "position": [x, y, z]}` to drop extra props into the scene.
+
+For scenes populated by component setup, set `wait_for_finalizer` on the world
+and add an `erh:isaac-sim:scene-finalizer` component whose `depends_on` lists
+every scene-populating component.
 
 ### arm attributes
 

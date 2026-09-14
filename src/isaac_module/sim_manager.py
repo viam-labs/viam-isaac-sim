@@ -73,6 +73,7 @@ class SimConfig:
     physics_dt: float = 1.0 / 60.0
     rendering_dt: float = 1.0 / 60.0
     boot_timeout: float = 300.0
+    wait_for_finalizer: bool = False
     # IP the livestream advertises to clients; auto-detected if empty
     livestream_public_ip: str = ""
     # props to spawn into the scene at boot; each entry:
@@ -103,6 +104,8 @@ class SimManager:
         self._tasks: "queue.Queue[Tuple[Callable[[], Any], Future]]" = queue.Queue()
         self._boot_requested = threading.Event()
         self._booted = threading.Event()
+        self._scene_finalized = threading.Event()
+        self._scene_finalized.set()
         self._boot_error: Optional[BaseException] = None
         self._stop = threading.Event()
         self._sim_thread_id: Optional[int] = None
@@ -137,11 +140,19 @@ class SimManager:
             raise RuntimeError(f"isaac sim failed to boot previously: {self._boot_error}")
 
         self.cfg = cfg
+        if cfg.wait_for_finalizer:
+            self._scene_finalized.clear()
+        else:
+            self._scene_finalized.set()
         self._boot_requested.set()
         if not self._booted.wait(timeout=cfg.boot_timeout):
             raise TimeoutError(f"isaac sim did not boot within {cfg.boot_timeout}s")
         if self._boot_error is not None:
             raise RuntimeError(f"isaac sim failed to boot: {self._boot_error}")
+
+    def finalize_scene(self) -> None:
+        """Release world stepping after configured resources finish setup."""
+        self._scene_finalized.set()
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -169,6 +180,10 @@ class SimManager:
         last = time.monotonic()
         while not self._stop.is_set():
             self._drain_tasks()
+            if not self._scene_finalized.is_set():
+                self._scene_finalized.wait(timeout=0.01)
+                last = time.monotonic()
+                continue
             now = time.monotonic()
             dt = now - last
             last = now
