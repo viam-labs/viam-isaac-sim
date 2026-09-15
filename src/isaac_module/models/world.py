@@ -11,6 +11,7 @@ Attributes:
                                       the Isaac Sim WebRTC Streaming Client)
   livestream_public_ip (string)     - IP advertised to streaming clients;
                                       auto-detected if unset
+  livestream_width / _height (int)  - streamed resolution, default 1280x720
   usd_stage (string)                - USD file/omniverse URL to open; if unset
                                       an empty stage with a ground plane is used
   physics_dt / rendering_dt (float) - sim step sizes, default 1/60
@@ -61,7 +62,13 @@ class IsaacWorld(Generic, EasyResource):
         cls, config: ComponentConfig
     ) -> Tuple[Sequence[str], Sequence[str]]:
         attrs = struct_to_dict(config.attributes)
-        for key in ("physics_dt", "rendering_dt", "boot_timeout_sec"):
+        for key in (
+            "physics_dt",
+            "rendering_dt",
+            "boot_timeout_sec",
+            "livestream_width",
+            "livestream_height",
+        ):
             if key in attrs and float(attrs[key]) <= 0:
                 raise ValueError(f"{key} must be positive")
         return [], []
@@ -80,6 +87,8 @@ class IsaacWorld(Generic, EasyResource):
             boot_timeout=float(attrs.get("boot_timeout_sec", 300.0)),
             kit_log_level=str(attrs.get("kit_log_level", "warning")),
             livestream_public_ip=str(attrs.get("livestream_public_ip", "")),
+            livestream_width=int(attrs.get("livestream_width", 1280)),
+            livestream_height=int(attrs.get("livestream_height", 720)),
             props=[dict(p) for p in attrs.get("props", [])],
         )
         SimManager.get().ensure_booted(cfg)
