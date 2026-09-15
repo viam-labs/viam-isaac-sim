@@ -102,10 +102,13 @@ overrides orientation to aim at a point.
 |---|---|---|
 | `mock` | `false` | run without Isaac Sim installed (development/testing) |
 | `headless` | `true` | no local GUI window |
-| `livestream` | `true` | WebRTC viewer at `http://<host>:8211/streaming/webrtc-client` |
+| `livestream` | `true` | serve the Isaac Sim WebRTC Streaming Client (headless only) |
+| `livestream_public_ip` | _auto-detected_ | IP advertised to streaming clients |
+| `livestream_width` / `livestream_height` | `1280` / `720` | streamed resolution |
 | `usd_stage` | _empty stage + ground plane_ | USD file or omniverse:// URL to open |
 | `physics_dt` / `rendering_dt` | `1/60` | step sizes in seconds |
 | `boot_timeout_sec` | `300` | Isaac Sim can take a while on first boot |
+| `kit_log_level` | `warning` | kit console verbosity |
 
 The world also supports `DoCommand`: `{"command": "status" | "play" | "pause" |
 "reset"}` and `{"command": "add_usd", "usd_path": "...", "prim_path":
