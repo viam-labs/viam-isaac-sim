@@ -20,6 +20,24 @@ On this module the arms are `rdk:component:arm` with `GetKinematics` served, so
 structurally rather than by tuning. It is the main reason to move, which makes planning
 latency the assumption the whole plan rests on — measured first, in phase 0.
 
+### The planner can see the arms — verified
+
+That claim only holds if the planner knows where the obstacles are, so it was checked
+rather than assumed. `arm.py:221` has `get_geometries()` returning `[]`, which looks
+fatal and is not: for an arm the motion service builds its collision model from
+`GetKinematics`, and `get_geometries` covers only geometry beyond the kinematic chain.
+The UR5e SVA carries a capsule or sphere on **all 7 links** (`base_link` r60×l260,
+`upper_arm_link` r65×l550, `forearm_link` r50×l490, …), so the planner does model both
+arms and will plan arm A around arm B. This is the arm-vs-arm collision the user reported
+three separate times, and it is fixed structurally by the move.
+
+The **held part is not** covered by that. A planner that only knows the kinematic chain
+will route the flange clear and swing a 60 mm box straight through arm B — precisely the
+reported bug. `qc:cell` must therefore pass the carried part to `motion.Move()` in
+`world_state` as a geometry attached to the moving arm, for every motion between grasp and
+release. This is a requirement on the verbs, not something the module provides, so it is
+in the risk table and in the phase-1 test.
+
 ## Decisions
 
 ### Arm: `ur5e`, and the cell scales down with it
@@ -47,15 +65,39 @@ and is the whole reason the cell has two arms. Current margins from arm A:
 Under UR20 both bins come into reach and the handoff silently becomes optional. A 20 kg
 arm inspecting a 60 mm carton is also wrong for the course visually.
 
-`ur5e` (0.85 m) is the arm this application really uses. The binding ratio
-`bin ÷ inspect = 1.457 / 1.145 = 1.27` is preserved under uniform scaling, so with the
-inspect station at 0.80 m the good bin sits at ~1.02 m — still out of reach, 0.17 m of
-margin, handoff still mandatory. Scale factor ≈ **0.68** on horizontal layout and
-pedestal heights.
+`ur5e` (0.85 m) is the arm this application really uses, and the cell scales down with it.
 
-The part stays 60 mm and the tool length stays 0.12 m — neither scales. The camera comes
-from 0.57 m to ~0.39 m, which *improves* the detector: frame 210 mm → 143 mm, smallest
-mark 18 px → ~26 px at model input.
+The scale had to be **measured**, not derived. The tempting argument — every distance
+shrinks by `s`, so the ratio between the inspect station and the bins is preserved — is
+wrong, because the tool hangs a fixed 0.168 m off the flange and does not scale
+(`cell.py:471`: "a bin drop that looked like 1.25 m was 1.29 m at the flange"). That
+offset can point toward or away from the base, and the sign differs between the presenting
+and bin stations, so it swings the result by more than the margin the ratio argument
+claims. `probes/scale_study.py` sweeps the scale against both constraints at once:
+
+| scale | worst station | nearest bin | |
+|---|---|---|---|
+| 0.56 | 0.693 | 0.842 | good bin reachable |
+| **0.58 – 0.62** | 0.713 – 0.754 | 0.870 – 0.926 | **ok** |
+| 0.64 | 0.775 | 0.953 | station past the 10% margin |
+| 0.68 | 0.816 | 1.009 | station at 96% of reach |
+
+**Scale 0.62.** Worst station `present right (b)` at 0.754 m (89% of reach); nearest bin
+0.926 m, 0.076 m beyond reach, so the handoff stays mandatory.
+
+The first draft of this plan said 0.68 on the ratio argument. The sweep shows 0.68 puts
+the worst station at 96% of reach, where a spherical reach bound stops being honest — near
+full extension the wrist orientation `present_rotation` asks for may not be achievable at
+all. That is exactly the "stale check" shape that cost five instrument fixes today.
+
+The part stays 60 mm and the tool 0.12 m — neither scales. The camera comes from 0.57 m to
+0.354 m, which *improves* the detector: frame 210 mm → 130 mm, smallest mark
+18 px → **30 px** at model input.
+
+The viable window is only 0.04 wide, so the cell barely fits a UR5e and a small layout
+change could close it from either side. Widening it means moving the bins outward relative
+to the arms — a reshape, not a rescale. Worth doing if phase 1 finds the margins tight in
+practice; the sweep is cheap to re-run.
 
 ### Split: generic capability upstream, QC logic in its own module
 
@@ -120,7 +162,7 @@ Replicator's tight 2D boxes inflate.
 ## The world config
 
 Phase 1 target (`fragments/qc-cell.json`), abbreviated to the parts that carry decisions.
-Distances are the UR10 layout × 0.68. **`position` (Isaac spawn) and `frame.translation`
+Distances are the UR10 layout × 0.62. **`position` (Isaac spawn) and `frame.translation`
 (Viam frame system, in mm) must agree for every arm** — if they disagree the motion
 service plans in a world that is not the one being simulated. This is the single largest
 correctness risk in the move and phase 0 tests it explicitly.
@@ -135,41 +177,42 @@ correctness risk in the move and phase 0 tests it explicitly.
         "headless": true, "livestream": true,
         "props": [
           { "name": "belt", "type": "cube", "fixed": true,
-            "position": [0.49, -0.38, 0.52], "size": 1.0,
-            "scale": [1.0, 0.28, 0.08], "color": [0.18, 0.18, 0.20] },
+            "position": [0.4464, -0.3472, 0.50], "size": 1.0,
+            "scale": [0.62, 0.20, 0.06], "color": [0.18, 0.18, 0.20] },
           { "name": "good_tray", "type": "cube", "fixed": true,
-            "position": [-0.30, 0.62, 0.40], "size": 0.30,
+            "position": [0.5022, 0.3844, 0.44], "size": 0.25,
             "scale": [1.0, 1.0, 0.10], "color": [0.15, 0.45, 0.20] },
           { "name": "bad_tray", "type": "cube", "fixed": true,
-            "position": [-0.52, 0.30, 0.40], "size": 0.30,
+            "position": [0.5022, 0.5828, 0.44], "size": 0.25,
             "scale": [1.0, 1.0, 0.10], "color": [0.55, 0.15, 0.15] }
         ]
       }
     },
     {
       "name": "arm-a", "type": "arm", "model": "erh:isaac-sim:arm",
-      "frame": { "parent": "world", "translation": { "x": 0, "y": 0, "z": 560 } },
+      "frame": { "parent": "world", "translation": { "x": 0, "y": -310, "z": 319.3 } },
       "attributes": { "world": "sim-world", "asset": "ur5e",
-                      "position": [0.0, 0.0, 0.56] }
+                      "position": [0.0, -0.31, 0.3193] }
     },
     {
       "name": "arm-b", "type": "arm", "model": "erh:isaac-sim:arm",
-      "frame": { "parent": "world", "translation": { "x": -620, "y": 480, "z": 560 } },
+      "frame": { "parent": "world", "translation": { "x": 0, "y": 310, "z": 319.3 } },
       "attributes": { "world": "sim-world", "asset": "ur5e",
-                      "position": [-0.62, 0.48, 0.56] }
+                      "position": [0.0, 0.31, 0.3193] }
     },
     {
       "name": "inspect-cam", "type": "camera", "model": "erh:isaac-sim:camera",
-      "frame": { "parent": "world", "translation": { "x": 850, "y": 240, "z": 830 } },
-      "attributes": { "world": "sim-world", "target": [0.49, 0.24, 0.83],
+      "frame": { "parent": "world", "translation": { "x": 775, "y": 0, "z": 682 } },
+      "attributes": { "world": "sim-world", "target": [0.4216, 0.0, 0.6944],
                       "width": 1280, "height": 720 }
     }
   ]
 }
 ```
 
-Arm-base coordinates are provisional — phase 1 re-derives them from the scaled layout and
-re-runs the reach check before anything is rendered.
+Coordinates come from the 0.62 sweep (`probes/scale_study.py`), but the tray and belt
+solids are still eyeballed — phase 1 re-derives them and re-runs the reach and clearance
+checks before anything is rendered.
 
 ## The course module
 
@@ -214,9 +257,20 @@ motion service. Validate with `--vision oracle`.
 
 A round runs end to end on the new machine with `--vision oracle`: a part spawns at the
 belt head, arm A picks it, presents all faces to the inspection camera, hands off to arm
-B, arm B places it in the tray the oracle's verdict selects, and the scoreboard reads
-6/6 — with **every arm motion issued through `motion.Move()`** and zero collisions
-reported, without a clearance probe, because the planner is what is being tested.
+B, arm B places it in the tray the oracle's verdict selects, and the scoreboard reads 6/6,
+with **every arm motion issued through `motion.Move()`**.
+
+The first draft added "and zero collisions reported, without a clearance probe, because
+the planner is what is being tested." That is circular: remove the probe and nothing
+reports collisions, so the test passes whether the planner works or not — the same shape
+as the five stale checks that had to be fixed today. The planner has to *earn* that trust:
+
+* keep an independent part-vs-arm check running through phase 1, and
+* **record the round.** Watching the video is what actually caught every collision this
+  session, while the instruments agreed the cell was clean.
+
+The probe can retire once a run with the check enabled reports clean and the video agrees
+— not before, and not on the strength of the architecture.
 
 ## Explicitly not doing
 
@@ -236,6 +290,8 @@ for a settled scene.
 |---|---|
 | planning latency too slow for a 2 h course | measured in phase 0, before anything depends on it |
 | Isaac `position` vs Viam `frame` disagree | asserted in phase 0; planner would otherwise plan in the wrong world |
+| held part not in `world_state` → box swings through arm B | `qc:cell` attaches the part geometry to the moving arm on every motion between grasp and release; phase-1 test covers it |
+| viable scale window is only 0.04 wide | re-run `scale_study.py` after any layout change; reshape (bins outward) if phase 1 finds it tight |
 | gripper blocked on Devin | phase 1 needs no gripper |
 | two Isaac instances | one at a time — stop the isaac-arcade sim before testing this one |
 | composite props rejected upstream | keep the change small and generic; it is useful beyond QC |
