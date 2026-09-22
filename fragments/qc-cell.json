@@ -1,0 +1,115 @@
+{
+  "_comment": [
+    "Viam 103 bimanual QC cell. Two ur5e arms inspect a 60 mm carton: arm-a picks it off",
+    "the infeed belt and presents five faces to inspect-cam, hands it to arm-b, and arm-b",
+    "places it in the good or bad tray.",
+    "",
+    "Geometry is the isaac-arcade layout scaled by 0.62, the scale probes/scale_study.py",
+    "found: every station stays inside the ur5e's 0.85 m reach with ~10% margin, and both",
+    "trays stay OUTSIDE it from arm-a, which is what makes the handoff mandatory rather",
+    "than merely intended. Rescaling this cell without re-running that sweep will quietly",
+    "break one of those two constraints - the viable window is only 0.58-0.62 wide.",
+    "",
+    "Each arm's isaac 'position' and its viam 'frame.translation' describe the same point",
+    "in two units (m and mm). They MUST agree: the motion service plans against the frame",
+    "system, so a disagreement plans collision-free paths through a world that is not the",
+    "one being simulated. tests/test_qc_cell_config.py asserts it.",
+    "",
+    "Belt and tray solids are provisional - sized by eye, not yet re-derived from the",
+    "scaled layout."
+  ],
+  "modules": [
+    {
+      "type": "local",
+      "name": "isaac-sim",
+      "executable_path": "/home/shrews/viam/viam-isaac-sim/run.sh"
+    }
+  ],
+  "components": [
+    {
+      "name": "sim-world",
+      "namespace": "rdk",
+      "type": "generic",
+      "model": "erh:isaac-sim:world",
+      "attributes": {
+        "headless": true,
+        "livestream": true,
+        "props": [
+          {
+            "name": "belt",
+            "type": "cube",
+            "fixed": true,
+            "position": [0.4464, -0.3472, 0.478],
+            "size": 1.0,
+            "scale": [0.62, 0.2, 0.06],
+            "color": [0.18, 0.18, 0.2]
+          },
+          {
+            "name": "good_tray",
+            "type": "cube",
+            "fixed": true,
+            "position": [0.5022, 0.3844, 0.44],
+            "size": 0.18,
+            "scale": [1.0, 1.0, 0.28],
+            "color": [0.15, 0.45, 0.2]
+          },
+          {
+            "name": "bad_tray",
+            "type": "cube",
+            "fixed": true,
+            "position": [0.5022, 0.5828, 0.44],
+            "size": 0.18,
+            "scale": [1.0, 1.0, 0.28],
+            "color": [0.55, 0.15, 0.15]
+          }
+        ]
+      }
+    },
+    {
+      "name": "arm-a",
+      "namespace": "rdk",
+      "type": "arm",
+      "model": "erh:isaac-sim:arm",
+      "frame": {
+        "parent": "world",
+        "translation": { "x": 0, "y": -310, "z": 319.3 }
+      },
+      "attributes": {
+        "world": "sim-world",
+        "asset": "ur5e",
+        "position": [0.0, -0.31, 0.3193]
+      }
+    },
+    {
+      "name": "arm-b",
+      "namespace": "rdk",
+      "type": "arm",
+      "model": "erh:isaac-sim:arm",
+      "frame": {
+        "parent": "world",
+        "translation": { "x": 0, "y": 310, "z": 319.3 }
+      },
+      "attributes": {
+        "world": "sim-world",
+        "asset": "ur5e",
+        "position": [0.0, 0.31, 0.3193]
+      }
+    },
+    {
+      "name": "inspect-cam",
+      "namespace": "rdk",
+      "type": "camera",
+      "model": "erh:isaac-sim:camera",
+      "frame": {
+        "parent": "world",
+        "translation": { "x": 775, "y": 0, "z": 682 }
+      },
+      "attributes": {
+        "world": "sim-world",
+        "target": [0.4216, 0.0, 0.6944],
+        "width": 1280,
+        "height": 720
+      }
+    }
+  ]
+}
