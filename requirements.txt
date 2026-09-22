@@ -1,3 +1,8 @@
-viam-sdk>=0.80.0
+# Pinned, not floored. viam-sdk 0.82 adds five abstract methods to Arm
+# (get_3d_models, get_manual_mode, get_properties, set_manual_mode,
+# move_through_joint_positions_streamed), so `>=0.80.0` resolves to a release
+# that cannot instantiate IsaacArm at all - the module fails to construct
+# rather than degrading. Implementing them is the real fix and lifts the pin.
+viam-sdk==0.80.0
 numpy
 pillow
