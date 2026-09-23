@@ -25,7 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from obstacle_check import box, tool_transform  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
+from viam.components.arm import Arm  # noqa: E402
 from viam.components.camera import Camera  # noqa: E402
+from viam.components.gripper import Gripper  # noqa: E402
 from viam.components.generic import Generic  # noqa: E402
 from viam.proto.common import (  # noqa: E402
     GeometriesInFrame, Pose, PoseInFrame, WorldState,
@@ -113,19 +115,29 @@ async def main():
         await asyncio.sleep(3)
 
         props = list((await world.do_command({"command": "obstacles"}))["obstacles"])
-        state = WorldState(
-            obstacles=[GeometriesInFrame(
-                reference_frame="world",
-                geometries=[box(p["label"], p["center_mm"], p["dims_mm"])
-                            for p in props],
-            )],
-            transforms=[tool_transform("arm-a"), tool_transform("arm-b")],
-        )
+        def world_state(with_part: bool):
+            """The carton is an obstacle right up until you mean to touch it.
+
+            Approach with it declared, so the arm routes around it instead of swiping it
+            off the belt; drop it from the set for the final descent and the carry, which
+            are contacts by intention rather than collisions.
+            """
+            chosen = props if with_part else [p for p in props if p["label"] != "part"]
+            return WorldState(
+                obstacles=[GeometriesInFrame(
+                    reference_frame="world",
+                    geometries=[box(p["label"], p["center_mm"], p["dims_mm"])
+                                for p in chosen],
+                )],
+                transforms=[tool_transform("arm-a"), tool_transform("arm-b")],
+            )
+
+        state = world_state(True)
 
         recorder = Recorder(camera, frames)
         task = asyncio.create_task(recorder.run())
 
-        async def go(arm, position, caption):
+        async def go(arm, position, caption, with_part=True):
             recorder.caption = caption
             try:
                 await motion.move(
@@ -133,14 +145,40 @@ async def main():
                     destination=PoseInFrame(reference_frame="world", pose=Pose(
                         x=position[0], y=position[1], z=position[2],
                         o_x=0, o_y=0, o_z=-1, theta=0)),
-                    world_state=state,
+                    world_state=world_state(with_part),
                 )
             except Exception as exc:  # noqa: BLE001
                 recorder.caption = f"{caption} - FAILED"
                 print(f"  {caption}: {str(exc)[:70]}")
                 await asyncio.sleep(1.0)
 
+        # Open with a real pick, because that is the part worth watching: the suction
+        # either carries the carton or it does not, and the video says which.
+        gripper = Gripper.from_robot(robot, "suction-a")
+        part = (await world.do_command(
+            {"command": "prop_poses", "names": ["part"]}))["props"]["part"]
+        px, py, pz = part["position_mm"]
+        contact = pz + 40 + 120
+
+        def at(z):
+            return (px, py, z)
+
         await asyncio.sleep(1.0)
+        recorder.caption = "arm-b clears"
+        await go("arm-b", HOMES["arm-b"], "arm-b clears")
+        await go("arm-a", at(contact + 150), "arm-a  approach the carton")
+        await go("arm-a", at(contact), "arm-a  down to the carton", with_part=False)
+        recorder.caption = "suction-a  grab"
+        caught = await gripper.grab()
+        await asyncio.sleep(0.6)
+        await go("arm-a", at(contact + 260), f"arm-a  lift (holding={caught})",
+                 with_part=False)
+        await go("arm-a", (px - 120, py + 220, contact + 260), "arm-a  carry",
+                 with_part=False)
+        recorder.caption = "suction-a  release"
+        await gripper.open()
+        await asyncio.sleep(1.5)
+
         for station, (arm, position) in STATIONS["stations"].items():
             if station.startswith("FORBIDDEN"):
                 continue
