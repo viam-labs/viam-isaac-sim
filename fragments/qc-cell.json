@@ -1,22 +1,41 @@
 {
   "_comment": [
-    "Viam 103 bimanual QC cell. Two ur5e arms inspect a 60 mm carton: arm-a picks it off",
+    "Viam 103 bimanual QC cell. Two ur5e arms inspect an 80 mm carton: arm-a picks it off",
     "the infeed belt and presents five faces to inspect-cam, hands it to arm-b, and arm-b",
     "places it in the good or bad tray.",
     "",
-    "Geometry is the isaac-arcade layout scaled by 0.62, the scale probes/scale_study.py",
-    "found: every station stays inside the ur5e's 0.85 m reach with ~10% margin, and both",
-    "trays stay OUTSIDE it from arm-a, which is what makes the handoff mandatory rather",
-    "than merely intended. Rescaling this cell without re-running that sweep will quietly",
-    "break one of those two constraints - the viable window is only 0.58-0.62 wide.",
+    "Geometry is the isaac-arcade layout scaled by 0.76, from probes/scale_study.py. Two",
+    "constraints have to hold at once: every station stays inside the arm's reach with",
+    "~10% margin, and both trays stay OUTSIDE arm-a's reach, which is what makes the",
+    "handoff a fact of the layout rather than an intention. The viable window is only",
+    "0.70-0.76, so rescaling without re-running the sweep will break one of them.",
+    "",
+    "The reach bound in that sweep is 1016.7 mm, measured from the motion service, NOT the",
+    "850 mm on the UR5e datasheet - that figure is to the wrist centre. An earlier pass",
+    "used 850, concluded the trays were out of reach at scale 0.62, and was wrong: the",
+    "planner reached the good tray from arm-a 5/5.",
     "",
     "Each arm's isaac 'position' and its viam 'frame.translation' describe the same point",
-    "in two units (m and mm). They MUST agree: the motion service plans against the frame",
-    "system, so a disagreement plans collision-free paths through a world that is not the",
-    "one being simulated. tests/test_qc_cell_config.py asserts it.",
+    "in two units (m and mm), and the test keeps them consistent so the file reads",
+    "honestly. Note they cannot actually disagree at runtime: apply_frame_to_attrs()",
+    "overwrites 'position' from the frame, so the frame wins and 'position' is inert",
+    "whenever a frame is present. The placement risk that IS real is rotational - whether",
+    "the SVA's base frame and the Isaac USD's root share a yaw - and no config test can",
+    "see it. Phase 1 settles it by commanding all-zero joints and comparing Isaac's",
+    "end-effector world pose against motion.GetPose.",
     "",
-    "Belt and tray solids are provisional - sized by eye, not yet re-derived from the",
-    "scaled layout."
+    "inspect-cam's fov_deg is NOT decoration. It defaults to 70 deg, which at this",
+    "working distance frames 606 mm and shrinks the smallest defect mark to 6 px at the",
+    "model input - far below what the detector can see. 20.83 deg is the arcade's 57 mm",
+    "lens, which frames 159 mm and keeps the mark at 24 px.",
+    "",
+    "The belt is derived from CONVEYOR_CENTER/CONVEYOR_SIZE, not eyeballed: it runs along",
+    "y (0.258 x 0.836), which an earlier draft had transposed to run along x and centred",
+    "on the pick slot instead of the belt. The trays are still provisional.",
+    "",
+    "None of this scenery exists in the frame system - props are spawned in Isaac only, so",
+    "the planner cannot see the belt or the trays. qc:cell has to pass them as world_state",
+    "obstacles on every move, or the arms will plan straight through them."
   ],
   "modules": [
     {
@@ -39,27 +58,27 @@
             "name": "belt",
             "type": "cube",
             "fixed": true,
-            "position": [0.4464, -0.3472, 0.478],
+            "position": [0.5472, -0.798, 0.57],
             "size": 1.0,
-            "scale": [0.62, 0.2, 0.06],
+            "scale": [0.2584, 0.836, 0.076],
             "color": [0.18, 0.18, 0.2]
           },
           {
             "name": "good_tray",
             "type": "cube",
             "fixed": true,
-            "position": [0.5022, 0.3844, 0.44],
-            "size": 0.18,
-            "scale": [1.0, 1.0, 0.28],
+            "position": [0.6156, 0.4712, 0.5515],
+            "size": 0.22,
+            "scale": [1.0, 1.0, 0.23],
             "color": [0.15, 0.45, 0.2]
           },
           {
             "name": "bad_tray",
             "type": "cube",
             "fixed": true,
-            "position": [0.5022, 0.5828, 0.44],
-            "size": 0.18,
-            "scale": [1.0, 1.0, 0.28],
+            "position": [0.6156, 0.7144, 0.5515],
+            "size": 0.22,
+            "scale": [1.0, 1.0, 0.23],
             "color": [0.55, 0.15, 0.15]
           }
         ]
@@ -72,12 +91,12 @@
       "model": "erh:isaac-sim:arm",
       "frame": {
         "parent": "world",
-        "translation": { "x": 0, "y": -310, "z": 319.3 }
+        "translation": { "x": 0, "y": -380, "z": 391.4 }
       },
       "attributes": {
         "world": "sim-world",
         "asset": "ur5e",
-        "position": [0.0, -0.31, 0.3193]
+        "position": [0.0, -0.38, 0.3914]
       }
     },
     {
@@ -87,12 +106,12 @@
       "model": "erh:isaac-sim:arm",
       "frame": {
         "parent": "world",
-        "translation": { "x": 0, "y": 310, "z": 319.3 }
+        "translation": { "x": 0, "y": 380, "z": 391.4 }
       },
       "attributes": {
         "world": "sim-world",
         "asset": "ur5e",
-        "position": [0.0, 0.31, 0.3193]
+        "position": [0.0, 0.38, 0.3914]
       }
     },
     {
@@ -102,11 +121,12 @@
       "model": "erh:isaac-sim:camera",
       "frame": {
         "parent": "world",
-        "translation": { "x": 775, "y": 0, "z": 682 }
+        "translation": { "x": 950, "y": 0, "z": 836 }
       },
       "attributes": {
         "world": "sim-world",
-        "target": [0.4216, 0.0, 0.6944],
+        "target": [0.5168, 0.0, 0.8512],
+        "fov_deg": 20.83,
         "width": 1280,
         "height": 720
       }

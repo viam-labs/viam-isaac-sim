@@ -8,3 +8,6 @@ venv/
 *~
 module.tar.gz
 dist/
+
+# local scratch: machine secrets, run logs
+.scratch/

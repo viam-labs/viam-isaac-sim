@@ -1,15 +1,20 @@
 """The QC cell fragment has to say the same thing twice, consistently.
 
 An arm is placed in Isaac by its `position` attribute and in Viam's frame system by its
-`frame.translation`. Nothing links them: they are two independent numbers describing the
-same point, in metres and in millimetres. If they drift apart the module still boots and
-the arm still moves, but the motion service plans against the frame system while the
-collisions happen in Isaac - so it confidently returns paths that are clear in a world
-that is not the one being simulated, and the failure looks like a planner bug rather than
-a config typo.
+`frame.translation` - the same point written twice, in metres and in millimetres.
 
-That is the single largest correctness risk in moving the cell onto this module, and it
-costs nothing to check, so it is checked here rather than discovered in a render.
+Be honest about what this buys. The two cannot actually diverge at runtime:
+`apply_frame_to_attrs()` overwrites `position` from the frame before the arm spawns, so
+the frame wins and `position` is inert whenever a frame is present. This test therefore
+keeps the file readable - a reader who edits one number and not the other is told - but it
+does not protect against a mis-placed arm.
+
+The placement risk that is real is rotational, and no config test can see it: the Viam SVA
+is rooted in the UR controller's `base` frame while the Isaac USD is a URDF import rooted
+in ROS `base_link`, and those differ by a rotation about Z. If they disagree, every planned
+x/y is mirrored relative to the simulation. Phase 1 settles that by commanding all-zero
+joints and comparing Isaac's end-effector world pose against `motion.GetPose` - mock mode
+cannot, because the mock arm ignores `position` and returns a constant end pose.
 """
 
 import json

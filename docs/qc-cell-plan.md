@@ -32,7 +32,7 @@ arms and will plan arm A around arm B. This is the arm-vs-arm collision the user
 three separate times, and it is fixed structurally by the move.
 
 The **held part is not** covered by that. A planner that only knows the kinematic chain
-will route the flange clear and swing a 60 mm box straight through arm B — precisely the
+will route the flange clear and swing an 80 mm box straight through arm B — precisely the
 reported bug. `qc:cell` must therefore pass the carried part to `motion.Move()` in
 `world_state` as a geometry attached to the moving arm, for every motion between grasp and
 release. This is a requirement on the verbs, not something the module provides, so it is
@@ -63,7 +63,7 @@ and is the whole reason the cell has two arms. Current margins from arm A:
 | bad bin | 1.715 m | out of reach | **reachable** |
 
 Under UR20 both bins come into reach and the handoff silently becomes optional. A 20 kg
-arm inspecting a 60 mm carton is also wrong for the course visually.
+arm inspecting an 80 mm carton is also wrong for the course visually.
 
 `ur5e` (0.85 m) is the arm this application really uses, and the cell scales down with it.
 
@@ -75,29 +75,41 @@ offset can point toward or away from the base, and the sign differs between the 
 and bin stations, so it swings the result by more than the margin the ratio argument
 claims. `probes/scale_study.py` sweeps the scale against both constraints at once:
 
-| scale | worst station | nearest bin | |
+The reach bound also had to be measured. UR5e is sold as an 850 mm arm, but that is to
+the wrist centre; what the layout must satisfy is the bound the **motion service** puts on
+a requested flange pose. Asking the planner for a pose it refuses reports it exactly:
+
+```
+asked for a pose too far max: 1016.72, asked for: 1076.72
+```
+
+| scale | worst station | nearest tray | |
 |---|---|---|---|
-| 0.56 | 0.693 | 0.842 | good bin reachable |
-| **0.58 – 0.62** | 0.713 – 0.754 | 0.870 – 0.926 | **ok** |
-| 0.64 | 0.775 | 0.953 | station past the 10% margin |
-| 0.68 | 0.816 | 1.009 | station at 96% of reach |
+| 0.68 | 0.816 | 1.009 | good tray reachable from arm-a |
+| **0.70 – 0.76** | 0.836 – 0.898 | 1.037 – 1.121 | **ok** |
+| 0.78 | 0.918 | 1.149 | station past the 10% margin |
 
-**Scale 0.62.** Worst station `present right (b)` at 0.754 m (89% of reach); nearest bin
-0.926 m, 0.076 m beyond reach, so the handoff stays mandatory.
+**Scale 0.76.** Worst station 0.898 m (88% of reach); nearest tray 1.121 m, 0.104 m
+beyond reach.
 
-The first draft of this plan said 0.68 on the ratio argument. The sweep shows 0.68 puts
-the worst station at 96% of reach, where a spherical reach bound stops being honest — near
-full extension the wrist orientation `present_rotation` asks for may not be achievable at
-all. That is exactly the "stale check" shape that cost five instrument fixes today.
+This number was wrong twice before it was right, both times for the same reason — a bound
+asserted rather than measured. First 0.68, from a ratio argument that ignored the
+non-scaling tool offset. Then 0.62, from the sweep run against the 850 mm datasheet
+figure, which put the trays "safely" outside a reach that was not the real one: at 0.62 the
+planner reached the good tray from arm-a **5/5**. The handoff would have been optional and
+nothing in the cell would have said so.
 
-The part stays 60 mm and the tool 0.12 m — neither scales. The camera comes from 0.57 m to
-0.354 m, which *improves* the detector: frame 210 mm → 130 mm, smallest mark
-18 px → **30 px** at model input.
+The part stays 80 mm and the tool 0.12 m — neither scales. The camera comes from 0.57 m to
+0.433 m, which *improves* the detector: frame 210 mm → 159 mm, smallest mark
+18 px → **24 px** at model input.
 
-The viable window is only 0.04 wide, so the cell barely fits a UR5e and a small layout
-change could close it from either side. Widening it means moving the bins outward relative
-to the arms — a reshape, not a rescale. Worth doing if phase 1 finds the margins tight in
-practice; the sweep is cheap to re-run.
+That improvement depends entirely on setting `fov_deg`. It defaults to **70°**, which at
+0.433 m frames 606 mm and puts the smallest mark at **6 px** — unusable. The arcade's lens
+is 57 mm, i.e. 20.83°, and the fragment now says so explicitly.
+
+The viable window is 0.06 wide, so a small layout change can close it from either side.
+Re-run `probes/scale_study.py` after any change, and re-run the planner check below —
+the arithmetic sweep is a fast filter, not the authority.
 
 ### Split: generic capability upstream, QC logic in its own module
 
@@ -233,15 +245,38 @@ path.
 
 ## Sequencing
 
-**Phase 0 — prove the assumption. `mock: true`, no GPU.**
-The README says mock runs without Isaac, so config shape and module wiring iterate with
-no 7-minute cycles and no contention with the peer session.
-- Local module entry; new machine (`viam-103-qc-cell`); machine config in `.scratch/secrets/`.
-- **Measure `motion.Move()` latency.** This is the load-bearing number. A round issues
-  ~50 verbs; at ~2 s/plan that is +100 s on a 140 s round, on top of 250 ms inference. If
-  it lands there, the round needs to be coarser — better to know now than after the scene
-  is built.
-- Assert Isaac `position` == `frame.translation` for both arms.
+**Phase 0 — done. `mock: true`, no GPU.**
+
+Machine `viam-103-qc-cell` exists (part `24314c96…`, separate from the isaac-arcade part
+`8be3608f…`, which is untouched), running a **local** module entry against this tree, with
+its cloud config in `.scratch/secrets/`. All four components construct in 258 ms and
+`rdk:service:motion/builtin` comes up.
+
+The module did not build at all at first: `requirements.txt` said `viam-sdk>=0.80.0`, which
+resolves to 0.82, and 0.82 adds five abstract methods to `Arm`, so `IsaacArm` cannot be
+instantiated. Pinned to 0.80.0; implementing those methods is what lifts the pin.
+
+**The layout holds, checked against the planner rather than against arithmetic.**
+`.scratch/verify_layout.py` drives all 17 stations at scale 0.76: every station an arm must
+reach is reached, and both trays are refused from arm-a with `too far`. That is the
+handoff constraint proven by the same solver the course will run.
+
+**Planning latency is NOT settled, and an earlier claim here was wrong.** A first pass
+reported 3–5 ms and concluded planning was free. That was an artifact: `motion.Move()`
+plans *and executes*, blocking until the arm arrives, and repeating a move the arm has
+already made returns in ~5 ms having done nothing. Taking a median over five repeats hid
+the single real move behind four no-ops. Measured properly, a first move to a new pose
+takes **0.9 s median, 8.2 s worst** — squarely in the range that would add ~100 s to a
+round, which is the risk this phase existed to rule out and has not.
+
+That figure is still not planning time: it is plan + simulated execution, and the mock arm
+drives every joint at 1 rad/s. The SDK has no plan-only call (`get_plan` only retrieves a
+plan already in flight), so the split has to come from Isaac in phase 1, timed against the
+real articulation. Two things make the mock number optimistic in the other direction, too:
+`world_state` was empty, so the planner never had to avoid anything, and RDK's fast path is
+a straight-line attempt that only falls back to sampling once the trays, belt, tool and
+held part are in the world. **Re-measure with the real obstacle set before trusting any
+round budget.**
 
 **Phase 1 — layout, no gripper.** Scaled ur5e layout; re-run the reach check (all
 stations < 0.85 m, both bins > 0.85 m from arm A); arms move to every station under the
