@@ -779,6 +779,34 @@ class SimManager:
         joint.CreateLocalRot0Attr().Set(local_rot)
         joint.CreateJointEnabledAttr().Set(True)
         joint.CreateExcludeFromArticulationAttr().Set(True)
+
+        # Two things a D6 needs before it can hold anything, both of which this was
+        # missing and neither of which fails loudly.
+        #
+        # Lock every axis. A D6 with no limits leaves all six degrees of freedom free, so
+        # even once the gripper fabricates the joint it constrains nothing - which is
+        # exactly what "closes, reports Closed, lists the part as gripped, and the part
+        # does not move" looks like. USD spells a locked axis as a limit whose low sits
+        # above its high.
+        joint_prim = joint.GetPrim()
+        for axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ"):
+            limit = UsdPhysics.LimitAPI.Apply(joint_prim, axis)
+            limit.CreateLowAttr().Set(1.0)
+            limit.CreateHighAttr().Set(-1.0)
+
+        # And mark it as an attachment point. Pointing the gripper's relationship at a
+        # joint is not enough; the joint itself has to carry the API or the plugin does
+        # not treat it as somewhere suction can act.
+        apply_attachment = getattr(
+            self._isaac.robot_schema, "ApplyAttachmentPointAPI", None
+        )
+        if apply_attachment is not None:
+            apply_attachment(joint_prim)
+        else:
+            LOGGER.warning(
+                "gripper %s: this isaac build has no ApplyAttachmentPointAPI; the "
+                "suction joint may be ignored", name,
+            )
         if body_path != parent:
             LOGGER.info("gripper %s: anchored to rigid body %s (parent_prim %s is not a "
                         "body); cup at %s in its frame", name, body_path, parent,
