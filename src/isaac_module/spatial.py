@@ -161,3 +161,24 @@ def to_vec3(value: Sequence[float], default: Vec3 = (0.0, 0.0, 0.0)) -> Vec3:
     if len(vals) != 3:
         raise ValueError(f"expected 3 values, got {len(vals)}")
     return (vals[0], vals[1], vals[2])
+def compose_pose(
+    parent_pos: Vec3, parent_quat: Quat, local_pos: Vec3, local_quat: Quat
+) -> tuple[Vec3, Quat]:
+    """Inverse of pose_in_frame: express a pose (local_pos, local_quat) given
+    in the frame (parent_pos, parent_quat) back in the parent's frame."""
+    world_position = (
+        parent_pos[0] + quat_rotate(parent_quat, local_pos)[0],
+        parent_pos[1] + quat_rotate(parent_quat, local_pos)[1],
+        parent_pos[2] + quat_rotate(parent_quat, local_pos)[2],
+    )
+    world_orientation = quat_mul(parent_quat, local_quat)
+    return world_position, world_orientation
+
+
+def viam_base_frame(root_pos: Vec3, root_quat: Quat, correction: Quat) -> tuple[Vec3, Quat]:
+    """Recover Viam's arm frame from the Isaac articulation root's world
+    pose: spawn composed root = frame * correction,
+    so frame = root * correction^-1."""
+    return root_pos, quat_mul(root_quat, quat_conj(correction))
+
+

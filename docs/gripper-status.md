@@ -39,6 +39,31 @@ not treat it as somewhere suction can act.
 The last two came from reading DTCurrie/viam-isaac-sim, whose vacuum implementation had
 both. Credit there; the diagnosis of the first three was ours.
 
+## Now built on the shared implementation
+
+The authoring is no longer ours. `surface_gripper.py` is vendored verbatim from
+DTCurrie/viam-isaac-sim, with `compat.import_surface_gripper` and the `asset_catalog`
+constants it reads, so the two trees carry one implementation rather than two to reconcile
+when they merge. What stays ours is `models/gripper.py` - the Viam API surface - and the
+translation from this module's config into the frame that module expects.
+
+That translation is the subtle part and is worth stating: it wants a tool frame whose **+Z
+is the cup axis**, while our `offset` is in the parent prim's frame, where Isaac's UR
+flange puts the tool along **+x**. The boot log prints the resolved axis so a
+misconfiguration is visible without a grasp test.
+
+Taking it also brought three things ours lacked, each of which reads as intermittency:
+
+* **`isaac:forwardAxis`.** The plugin raycasts along the joint's forward axis to find
+  something to grip. We never set it, so the ray fired wherever the joint frame happened
+  to point.
+* **The coaxial check turned off.** The plugin compares a *single physics step's* force to
+  its limit with no averaging window, and a linear move is waypoints a couple of
+  millimetres apart, each a step into stiff drives. A real limit fires on those spikes and
+  drops a part that is not slipping. Authored as 0; shear still guards.
+* **A world-level scope.** The rig must not sit inside the articulation - a rigid body
+  nested under a link is an error - and ours was authored under `wrist_3_link`.
+
 ## Open: reliable when measured, unreliable when filmed
 
 `probes/grasp_reliability.py` picks the carton five times out of five, and the gripper's
@@ -48,7 +73,8 @@ not lying on its own account.
 
 `probes/record_cell.py` runs the same sequence and drops the carton every time.
 
-Ruled out so far: **capture rate**. The frame grabber originally pulled flat out, which
+Ruled out so far: **the gripper implementation** - replacing ours with the shared rig kept
+the probe at 5/5 and left the filmed run still dropping. And **capture rate**. The frame grabber originally pulled flat out, which
 competes with stepping physics on the sim thread; pacing it to 12 fps changed nothing.
 
 Still to try, cheapest first: film the reliability probe itself rather than the recorder's

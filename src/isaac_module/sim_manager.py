@@ -718,24 +718,24 @@ class SimManager:
         return self._cached_handle("gripper", name, attrs, factory)
 
     def _create_gripper_isaac(self, name: str, attrs: Dict[str, Any]) -> "IsaacGripperHandle":
-        """Author a surface gripper and the joint it grips through.
+        """Author the suction rig through the shared surface_gripper module.
 
-        Isaac's surface gripper does not grip from a point in space; it grips through
-        *attachment points*, which are D6 joints anchored to the body doing the holding.
-        The joint has to be authored here because nothing in the arm's USD has one: it is
-        the suction cup, expressed as physics.
+        The authoring itself lives in `surface_gripper.py`, vendored from
+        DTCurrie/viam-isaac-sim so the two trees carry one implementation rather than two
+        to reconcile. This method's job is only to translate *this* module's config into
+        the frame that module expects.
 
-        The joint's requirements are not negotiable (isaac's own example lists them): D6,
-        enabled, excluded from the articulation, and no break force - a joint inside the
-        articulation would be solved as part of the arm instead of as a graspable contact.
+        That translation is the whole subtlety. It wants a tool frame whose **+Z is the
+        cup axis**; our `offset` is in the parent prim's frame, where isaac's UR flange
+        puts the tool along **+x**. Same cup, two conventions - getting it wrong aims the
+        plugin's raycast sideways, and it then grips only when geometry happens to line
+        up, which is exactly the intermittency this replaced.
         """
-        from pxr import Gf, UsdGeom, UsdPhysics
+        import math
 
-        if self._isaac.robot_schema is None or self._isaac.GripperView is None:
-            raise RuntimeError(
-                "this isaac build has no surface gripper extension "
-                "(isaacsim.robot.surface_gripper); gripper components need it"
-            )
+        from .asset_catalog import CUP_APPROACH_GAP_MM
+        from .spatial import _cross, _dot, _norm, quat_from_axis_angle, quat_mul
+        from .surface_gripper import GripperLimits, author_attachment_rig
 
         stage = self._isaac.omni_usd.get_context().get_stage()
         parent = attrs.get("parent_prim")
@@ -748,12 +748,11 @@ class SimManager:
         if not parent_prim.IsValid():
             raise ValueError(f"gripper {name}: parent_prim {parent!r} is not in the stage")
 
-        # The joint must be anchored to a RIGID BODY, not to any convenient frame. An
-        # arm's flange is usually a plain Xform hanging off the link that actually has
-        # RigidBodyAPI, and a joint parented to the Xform is silently inert - it reports
-        # a grip and holds nothing. So walk up to the real body, and re-express the cup
-        # offset in that body's frame so the caller can still name the frame they think
-        # in.
+        from pxr import UsdGeom, UsdPhysics
+
+        # The joints must hang from a rigid body, and the rig's scope must sit OUTSIDE
+        # the articulation - a rigid body nested under a link is an error. So walk up to
+        # the body for the anchor, and put the scope at world level.
         body_prim = parent_prim
         while body_prim.IsValid() and not body_prim.HasAPI(UsdPhysics.RigidBodyAPI):
             body_prim = body_prim.GetParent()
@@ -764,73 +763,73 @@ class SimManager:
             )
         body_path = body_prim.GetPath().pathString
 
-        offset = Gf.Vec3d(*[float(v) for v in (attrs.get("offset") or (0.0, 0.0, 0.0))])
         cache = UsdGeom.XformCache()
         to_body = (cache.GetLocalToWorldTransform(parent_prim)
                    * cache.GetLocalToWorldTransform(body_prim).GetInverse())
-        local_pos = to_body.Transform(offset)
-        local_rot = Gf.Quatf(to_body.ExtractRotationQuat())
+        offset = [float(v) for v in (attrs.get("offset") or (0.0, 0.0, 0.0))]
+        from pxr import Gf as _Gf
 
-        prim_name = _prim_name(name)
-        joint_path = f"{body_path}/{prim_name}_suction_joint"
-        joint = UsdPhysics.Joint.Define(stage, joint_path)
-        joint.CreateBody0Rel().SetTargets([body_path])
-        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(local_pos))
-        joint.CreateLocalRot0Attr().Set(local_rot)
-        joint.CreateJointEnabledAttr().Set(True)
-        joint.CreateExcludeFromArticulationAttr().Set(True)
+        tip = to_body.Transform(_Gf.Vec3d(*offset))
+        tool_pos = (float(tip[0]), float(tip[1]), float(tip[2]))
 
-        # Two things a D6 needs before it can hold anything, both of which this was
-        # missing and neither of which fails loudly.
-        #
-        # Lock every axis. A D6 with no limits leaves all six degrees of freedom free, so
-        # even once the gripper fabricates the joint it constrains nothing - which is
-        # exactly what "closes, reports Closed, lists the part as gripped, and the part
-        # does not move" looks like. USD spells a locked axis as a limit whose low sits
-        # above its high.
-        joint_prim = joint.GetPrim()
-        for axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ"):
-            limit = UsdPhysics.LimitAPI.Apply(joint_prim, axis)
-            limit.CreateLowAttr().Set(1.0)
-            limit.CreateHighAttr().Set(-1.0)
-
-        # And mark it as an attachment point. Pointing the gripper's relationship at a
-        # joint is not enough; the joint itself has to carry the API or the plugin does
-        # not treat it as somewhere suction can act.
-        apply_attachment = getattr(
-            self._isaac.robot_schema, "ApplyAttachmentPointAPI", None
-        )
-        if apply_attachment is not None:
-            apply_attachment(joint_prim)
-        else:
-            LOGGER.warning(
-                "gripper %s: this isaac build has no ApplyAttachmentPointAPI; the "
-                "suction joint may be ignored", name,
+        # Where the cup points, in the body's frame: the offset direction carried through
+        # the same transform. Then the rotation that takes +Z onto it.
+        direction = to_body.TransformDir(_Gf.Vec3d(*offset))
+        direction = (float(direction[0]), float(direction[1]), float(direction[2]))
+        length = _norm(direction)
+        if length < 1e-9:
+            raise ValueError(
+                f"gripper {name}: offset is zero, so the cup has no axis to point along"
             )
-        if body_path != parent:
-            LOGGER.info("gripper %s: anchored to rigid body %s (parent_prim %s is not a "
-                        "body); cup at %s in its frame", name, body_path, parent,
-                        [round(v, 4) for v in local_pos])
+        direction = tuple(v / length for v in direction)
+        z_axis = (0.0, 0.0, 1.0)
+        dot = max(-1.0, min(1.0, _dot(z_axis, direction)))
+        if dot > 1.0 - 1e-9:
+            tool_quat = (1.0, 0.0, 0.0, 0.0)
+        elif dot < -1.0 + 1e-9:
+            tool_quat = quat_from_axis_angle((1.0, 0.0, 0.0), math.pi)
+        else:
+            tool_quat = quat_from_axis_angle(_cross(z_axis, direction), math.acos(dot))
 
-        gripper_path = f"{body_path}/{prim_name}_gripper"
-        self._isaac.robot_schema.CreateSurfaceGripper(stage, gripper_path)
-        gripper_prim = stage.GetPrimAtPath(gripper_path)
-        schema = self._isaac.robot_schema
-        gripper_prim.GetRelationship(
-            schema.Relations.ATTACHMENT_POINTS.name
-        ).SetTargets([joint_path])
+        position, orientation = self._isaac.SingleXFormPrim(body_path).get_world_pose()
+        body_pose = (tuple(float(v) for v in position),
+                     tuple(float(v) for v in orientation))
 
-        def _set(attribute, value):
-            gripper_prim.GetAttribute(attribute.name).Set(float(value))
+        limits = GripperLimits(
+            max_grip_distance_m=float(attrs.get("max_grip_distance", 0.02)),
+            # The plugin's coaxial check reads ONE physics step with no averaging window,
+            # and a linear move is waypoints a couple of millimetres apart, each a step
+            # into stiff drives. A real limit here fires on those spikes and drops a part
+            # that is not actually slipping. Authored as 0, which turns that check off and
+            # leaves shear - whose locked-axis reading works - to the plugin.
+            coaxial_force_limit_n=float(attrs.get("coaxial_force_limit", 0.0)),
+            shear_force_limit_n=float(attrs.get("shear_force_limit", 50.0)),
+            retry_interval_s=float(attrs.get("retry_interval_sec", 0.5)),
+        )
 
-        _set(schema.Attributes.MAX_GRIP_DISTANCE, attrs.get("max_grip_distance", 0.01))
-        _set(schema.Attributes.COAXIAL_FORCE_LIMIT, attrs.get("coaxial_force_limit", 50.0))
-        _set(schema.Attributes.SHEAR_FORCE_LIMIT, attrs.get("shear_force_limit", 50.0))
-        _set(schema.Attributes.RETRY_INTERVAL, attrs.get("retry_interval_sec", 0.5))
+        rig = author_attachment_rig(
+            self._isaac.gripper_modules,
+            stage,
+            scope_path=f"/World/{_prim_name(name)}_rig",
+            body0_path=body_path,
+            body0_world_pose=body_pose,
+            tool_pose_in_body0=(tool_pos, tool_quat),
+            points_tool_m=[(0.0, 0.0, 0.0)],
+            clearance_offset_m=float(
+                attrs.get("clearance_offset_m", CUP_APPROACH_GAP_MM / 1000.0)),
+            limits=limits,
+            compliance=None,  # one cup: lock every axis, which welds it to the payload
+        )
 
-        view = self._isaac.GripperView(paths=gripper_path)
-        LOGGER.info("gripper %s: suction at %s, joint %s", name, gripper_path, joint_path)
-        return IsaacGripperHandle(self, view, gripper_path)
+        # The plugin only looks for grippers on the first physics frame after play, so a
+        # rig authored after the last reset is never seen.
+        self.world.reset()
+
+        view = self._isaac.GripperView(paths=rig.gripper_path)
+        LOGGER.info("gripper %s: rig %s on body %s, cup axis %s in its frame",
+                    name, rig.scope_path, body_path,
+                    [round(v, 3) for v in direction])
+        return IsaacGripperHandle(self, view, rig.gripper_path)
 
     def create_camera(self, name: str, attrs: Dict[str, Any]) -> "CameraHandle":
         self._require_booted()
@@ -1049,10 +1048,13 @@ def _import_isaac():
         ns.GripperView = GripperView
         ns.robot_schema = robot_schema
         ns.omni_usd = omni.usd
+        from . import compat as _compat
+        ns.gripper_modules = _compat.import_surface_gripper()
     except ImportError:
         ns.GripperView = None
         ns.robot_schema = None
         ns.omni_usd = None
+        ns.gripper_modules = None
 
     try:
         import omni.client
