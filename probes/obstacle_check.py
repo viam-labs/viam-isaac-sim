@@ -51,7 +51,7 @@ from viam.services.motion import MotionClient
 
 FQDN = os.environ.get("QC_FQDN", "viam-103-qc-cell-main.pgn074cus0.viam.cloud")
 
-ARM = "arm-a"
+ARM = os.environ.get("QC_TOOL_ARM", "arm-a")
 TOOL_LENGTH_MM = 120.0
 TOOL_RADIUS_MM = 25.0
 
@@ -69,19 +69,27 @@ def box(label, centre_mm, dims_mm):
     )
 
 
-def tool_transform():
-    """The tool, as a frame hanging off the arm's flange so it travels with it."""
+def tool_transform(arm=None):
+    """The tool, as a frame hanging off one arm's flange so it travels with that arm.
+
+    `arm` is not decoration. A transform is carried by its parent, so a tool parented to
+    arm-a while arm-b is being planned is just a static box parked wherever arm-a happens
+    to be standing - and in this cell that is right beside the inspection point, which
+    made all four of arm-b's presenting stations look unreachable. Every arm that carries
+    a tool needs its own transform, named distinctly.
+    """
+    arm = arm or ARM
     return Transform(
-        reference_frame="tool",
+        reference_frame=f"tool-{arm}",
         pose_in_observer_frame=PoseInFrame(
-            reference_frame=ARM,
+            reference_frame=arm,
             pose=Pose(x=0.0, y=0.0, z=TOOL_LENGTH_MM / 2.0, **IDENTITY),
         ),
         physical_object=Geometry(
             center=Pose(x=0.0, y=0.0, z=0.0, **IDENTITY),
             box=RectangularPrism(dims_mm=Vector3(
                 x=TOOL_RADIUS_MM * 2, y=TOOL_RADIUS_MM * 2, z=TOOL_LENGTH_MM)),
-            label="tool",
+            label=f"tool-{arm}",
         ),
     )
 

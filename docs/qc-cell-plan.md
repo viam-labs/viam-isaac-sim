@@ -390,6 +390,37 @@ Ordered by what breaks worst. Items 1 and 2 gate phase 1.
    live in this fork, pinned as a local path. That is fine for an instructor machine, but
    it is a coupling, and gaps 2–4 above are not yet assigned to a phase.
 
+## What the obstacle work turned up
+
+Running all 17 stations against the scenery and the tool (`probes/layout_check.py`)
+settles some things and opens others.
+
+**The planner now catches arm-vs-arm interference.** This was demonstrated accidentally
+and is the clearest evidence the move was worth making: with arm-a left parked at the
+inspection point by the previous station, every one of arm-b's presenting stations was
+refused. That is the exact collision the user reported three times from video, now refused
+before anything moves. The check retreats the idle arm first, because a round never has
+both arms at the inspection point either.
+
+**16 of 17 stations plan cleanly** with scenery and both tools declared. Median planning
+298 ms.
+
+**Two open problems, and they are different failures.**
+
+1. `place_bad` fails with "no plan" after a 30 s timeout **in the full sequence**, but
+   reaches in 223–1268 ms when tried in isolation — from a clean home, from `place_good`,
+   and with arm-a sitting at the retreat pose. So it is state-dependent rather than
+   random, and not yet root-caused. It is not obviously geometric: the trays are only
+   23 mm apart at my provisional sizing, which is worth fixing regardless, but the same
+   goal plans fine most of the time.
+2. **Execution stalls are separate from planning.** Arm-a was seen to plan a move to an
+   empty pose and then physically stall against nothing the planner knew about. That is
+   finding 4 (execution does not track the plan) showing up in practice, and it is why the
+   independent probe and the video have to stay.
+
+Neither is a reason to stop, but "the planner removes the collision class" should be read
+as "for planning" — execution is still its own risk.
+
 ## Risks
 
 | risk | mitigation |
@@ -397,6 +428,7 @@ Ordered by what breaks worst. Items 1 and 2 gate phase 1.
 | planning latency too slow for a 2 h course | measured in phase 0, before anything depends on it |
 | ~~Isaac `position` vs Viam `frame` disagree~~ | resolved — see finding 1; verified end to end on both arms |
 | held part not in `world_state` → box swings through arm B | mechanism now proven: a `Transform` parented to the arm's EE frame, same as the tool. `qc:cell` attaches the part between grasp and release; phase-1 test covers it |
+| planning is state-dependent: one station times out at 30 s in sequence but plans in ~1 s alone | root-cause before the round loop depends on it; a 30 s stall is fatal to a 2 h course |
 | viable scale window is only 0.04 wide | re-run `scale_study.py` after any layout change; reshape (bins outward) if phase 1 finds it tight |
 | gripper blocked on Devin | phase 1 needs no gripper |
 | two Isaac instances | one at a time — stop the isaac-arcade sim before testing this one |
