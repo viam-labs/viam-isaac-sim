@@ -10,10 +10,15 @@ Attributes:
   world (string, required)       - name of the erh:isaac-sim:world component
   parent_prim (string, required) - the prim the cup hangs off, usually an arm's flange,
                                    e.g. "/World/arm_a/wrist_3_link/flange"
-  offset ([x,y,z] meters)        - where the cup sits relative to that prim. This is the
-                                   same standoff the caller's tool geometry must use, or
-                                   the planner and the suction disagree about where the
-                                   tool tip is.
+  offset ([x,y,z] meters)        - where the cup sits in PARENT_PRIM's own frame, which
+                                   is not the frame viam plans in. Measured on isaac's
+                                   ur5e: commanding the end-effector frame tool-down puts
+                                   the flange prim's local +x pointing down, so the tool
+                                   runs along +x there - the urdf ee_link convention -
+                                   while viam's SVA puts the same tool along the
+                                   end-effector frame's +z. Same cup, two frames, two
+                                   axes. Getting this wrong points the suction sideways
+                                   and every grasp silently misses.
   max_grip_distance (m)          - how close a body must be to be gripped (default 0.01)
   coaxial_force_limit (N)        - pull-off force along the cup's axis (default 50)
   shear_force_limit (N)          - sideways force before it slips (default 50)
@@ -132,6 +137,9 @@ class IsaacGripper(Gripper, EasyResource):
         kinematics file nor the isaac articulation, so a path can clear the flange by a
         millimetre and put the cup through the bench.
         """
+        # Reported in the gripper's own frame, where +z is the tool axis - the viam
+        # convention, NOT the parent prim's +x that `offset` uses. The two are only the
+        # same cup seen from two frames.
         spec = self._attrs.get("geometry") or {}
         radius = float(spec.get("radius_mm", _DEFAULT_RADIUS_MM))
         length = float(spec.get("length_mm", _DEFAULT_LENGTH_MM))

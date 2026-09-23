@@ -273,9 +273,9 @@
         "world": "sim-world",
         "parent_prim": "/World/arm_a/wrist_3_link/flange",
         "offset": [
+          0.12,
           0.0,
-          0.0,
-          0.12
+          0.0
         ],
         "max_grip_distance": 0.02,
         "geometry": {
@@ -293,9 +293,9 @@
         "world": "sim-world",
         "parent_prim": "/World/arm_b/wrist_3_link/flange",
         "offset": [
+          0.12,
           0.0,
-          0.0,
-          0.12
+          0.0
         ],
         "max_grip_distance": 0.02,
         "geometry": {

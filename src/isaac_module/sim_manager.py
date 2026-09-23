@@ -491,9 +491,21 @@ class SimManager:
             out: Dict[str, Dict[str, Any]] = {}
             for name in chosen:
                 prim_path = f"/World/{_prim_name(name)}"
+                # A simulated body's live pose is in the physics view, not necessarily in
+                # USD: reading the xform can hand back the last value written to the
+                # stage while the body has long since moved. That is not a small error -
+                # it made a part look like it never left the belt while an arm carried it
+                # away. Ask the rigid-body view first and only fall back to the xform.
+                reader = None
+                if self._isaac.SingleRigidPrim is not None:
+                    try:
+                        reader = self._isaac.SingleRigidPrim(prim_path)
+                    except Exception:
+                        reader = None
+                if reader is None:
+                    reader = self._isaac.SingleXFormPrim(prim_path)
                 try:
-                    position, quat = self._isaac.SingleXFormPrim(
-                        prim_path).get_world_pose()
+                    position, quat = reader.get_world_pose()
                 except Exception:
                     LOGGER.exception("could not read pose of prop %s", name)
                     continue
@@ -501,6 +513,34 @@ class SimManager:
                     "position_mm": [float(v) * 1000.0 for v in position],
                     "orientation_wxyz": [float(v) for v in quat],
                     "live": True,
+                }
+            return out
+
+        return self.run(_read)
+
+    def prim_poses(self, paths: List[str]) -> Dict[str, Dict[str, Any]]:
+        """World pose of arbitrary prims, for when config and reality disagree.
+
+        Props are addressed by name; this takes prim paths, which is what you need when
+        the question is about something the module authored rather than something the
+        config named - a gripper's attachment point, an arm link, a joint. Positions are
+        millimetres.
+        """
+        self._require_booted()
+        if self.mock:
+            return {}
+
+        def _read() -> Dict[str, Dict[str, Any]]:
+            out: Dict[str, Dict[str, Any]] = {}
+            for path in paths:
+                try:
+                    position, quat = self._isaac.SingleXFormPrim(path).get_world_pose()
+                except Exception as exc:  # noqa: BLE001
+                    out[path] = {"error": str(exc)[:120]}
+                    continue
+                out[path] = {
+                    "position_mm": [float(v) * 1000.0 for v in position],
+                    "orientation_wxyz": [float(v) for v in quat],
                 }
             return out
 
@@ -689,7 +729,7 @@ class SimManager:
         enabled, excluded from the articulation, and no break force - a joint inside the
         articulation would be solved as part of the arm instead of as a graspable contact.
         """
-        from pxr import Gf, UsdPhysics
+        from pxr import Gf, UsdGeom, UsdPhysics
 
         if self._isaac.robot_schema is None or self._isaac.GripperView is None:
             raise RuntimeError(
@@ -704,22 +744,47 @@ class SimManager:
                 f"gripper {name}: needs parent_prim, the prim it hangs off "
                 "(e.g. an arm's flange)"
             )
-        if not stage.GetPrimAtPath(parent).IsValid():
+        parent_prim = stage.GetPrimAtPath(parent)
+        if not parent_prim.IsValid():
             raise ValueError(f"gripper {name}: parent_prim {parent!r} is not in the stage")
 
+        # The joint must be anchored to a RIGID BODY, not to any convenient frame. An
+        # arm's flange is usually a plain Xform hanging off the link that actually has
+        # RigidBodyAPI, and a joint parented to the Xform is silently inert - it reports
+        # a grip and holds nothing. So walk up to the real body, and re-express the cup
+        # offset in that body's frame so the caller can still name the frame they think
+        # in.
+        body_prim = parent_prim
+        while body_prim.IsValid() and not body_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            body_prim = body_prim.GetParent()
+        if not body_prim.IsValid():
+            raise ValueError(
+                f"gripper {name}: no rigid body at or above {parent!r}; suction needs a "
+                "body to pull against"
+            )
+        body_path = body_prim.GetPath().pathString
+
+        offset = Gf.Vec3d(*[float(v) for v in (attrs.get("offset") or (0.0, 0.0, 0.0))])
+        cache = UsdGeom.XformCache()
+        to_body = (cache.GetLocalToWorldTransform(parent_prim)
+                   * cache.GetLocalToWorldTransform(body_prim).GetInverse())
+        local_pos = to_body.Transform(offset)
+        local_rot = Gf.Quatf(to_body.ExtractRotationQuat())
+
         prim_name = _prim_name(name)
-        joint_path = f"{parent}/{prim_name}_suction_joint"
+        joint_path = f"{body_path}/{prim_name}_suction_joint"
         joint = UsdPhysics.Joint.Define(stage, joint_path)
-        joint.CreateBody0Rel().SetTargets([parent])
-        # Where the cup sits relative to the flange. The part is grabbed at this point,
-        # so it is the same offset the caller's tool geometry has to use.
-        offset = [float(v) for v in (attrs.get("offset") or (0.0, 0.0, 0.0))]
-        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(*offset))
-        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateBody0Rel().SetTargets([body_path])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(local_pos))
+        joint.CreateLocalRot0Attr().Set(local_rot)
         joint.CreateJointEnabledAttr().Set(True)
         joint.CreateExcludeFromArticulationAttr().Set(True)
+        if body_path != parent:
+            LOGGER.info("gripper %s: anchored to rigid body %s (parent_prim %s is not a "
+                        "body); cup at %s in its frame", name, body_path, parent,
+                        [round(v, 4) for v in local_pos])
 
-        gripper_path = f"{parent}/{prim_name}_gripper"
+        gripper_path = f"{body_path}/{prim_name}_gripper"
         self._isaac.robot_schema.CreateSurfaceGripper(stage, gripper_path)
         gripper_prim = stage.GetPrimAtPath(gripper_path)
         schema = self._isaac.robot_schema
@@ -730,8 +795,6 @@ class SimManager:
         def _set(attribute, value):
             gripper_prim.GetAttribute(attribute.name).Set(float(value))
 
-        # Defaults chosen for a light carton on a vacuum cup: grip anything within a
-        # centimetre, and let it be pulled off rather than welded on.
         _set(schema.Attributes.MAX_GRIP_DISTANCE, attrs.get("max_grip_distance", 0.01))
         _set(schema.Attributes.COAXIAL_FORCE_LIMIT, attrs.get("coaxial_force_limit", 50.0))
         _set(schema.Attributes.SHEAR_FORCE_LIMIT, attrs.get("shear_force_limit", 50.0))
@@ -927,6 +990,12 @@ def _import_isaac():
     ns.get_assets_root_path = get_assets_root_path
 
     try:
+        from isaacsim.core.prims import SingleRigidPrim
+        ns.SingleRigidPrim = SingleRigidPrim
+    except ImportError:
+        ns.SingleRigidPrim = None
+
+    try:
         from isaacsim.core.prims import SingleArticulation, SingleXFormPrim
     except ImportError:
         from omni.isaac.core.articulations import Articulation as SingleArticulation
@@ -1049,10 +1118,18 @@ class IsaacGripperHandle(GripperHandle):
     def open(self) -> None:
         self._sim.run(lambda: self._view.apply_gripper_action([self._OPEN]))
 
+    # isaac returns these as numbers, not the "Open"/"Closing"/"Closed" strings its
+    # docstring advertises - measured: "0" open, "2" closed. Map both spellings so a
+    # future build that starts returning words does not silently read as open.
+    _STATUS = {"0": "Open", "1": "Closing", "2": "Closed",
+               "Open": "Open", "Closing": "Closing", "Closed": "Closed"}
+
     def status(self) -> str:
         def _status():
             values = self._view.get_surface_gripper_status()
-            return str(values[0]) if len(values) else "Open"
+            if not len(values):
+                return "Open"
+            return self._STATUS.get(str(values[0]).strip(), str(values[0]))
 
         return self._sim.run(_status)
 

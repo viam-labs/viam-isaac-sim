@@ -130,6 +130,11 @@ class IsaacWorld(Generic, EasyResource):
             names = command.get("names")
             names = [str(n) for n in names] if names else None
             return {"props": sim.prop_poses(names)}
+        if cmd == "prim_poses":
+            paths = [str(x) for x in (command.get("paths") or [])]
+            if not paths:
+                raise ValueError("prim_poses requires a 'paths' list")
+            return {"prims": sim.prim_poses(paths)}
         if cmd == "add_usd":
             usd_path = str(command.get("usd_path", ""))
             prim_path = str(command.get("prim_path", ""))
@@ -142,5 +147,5 @@ class IsaacWorld(Generic, EasyResource):
             return {"ok": True}
         raise ValueError(
             f"unknown command {cmd!r}; supported: status, play, pause, reset, "
-            f"obstacles, prop_poses, add_usd"
+            f"obstacles, prop_poses, prim_poses, add_usd"
         )
