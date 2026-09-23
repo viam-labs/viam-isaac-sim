@@ -323,16 +323,24 @@ for a settled scene.
 
 Ordered by what breaks worst. Items 1 and 2 gate phase 1.
 
-1. **Base-frame yaw between the SVA and the Isaac USD.** The Viam SVA is rooted in the UR
-   controller's `base` frame; Isaac's UR USDs are URDF imports rooted in ROS `base_link`,
-   and the two differ by a rotation about Z. If they disagree, every planned x/y is
-   mirrored relative to the simulation and nothing downstream works. A frame `orientation`
-   cannot correct it, because `apply_frame_to_attrs` folds the same quaternion into the
-   Isaac spawn — it would need a per-asset spawn offset in the module. **Mock cannot
-   detect this** (the mock arm ignores `position` and returns a constant end pose), so it
-   is the first thing phase 1 does: set `end_effector_prim` (the fragment omits it, so
-   `GetEndPosition` currently raises), command all-zero joints, and compare Isaac's
-   end-effector world pose against `motion.GetPose`.
+1. ~~**Base-frame yaw between the SVA and the Isaac USD.**~~ **Resolved.** It was real:
+   Isaac's UR assets are URDF imports rooted at ROS `base_link` while Viam's kinematics
+   use the UR controller's `base` frame, a half turn apart about Z, so every planned x and
+   y was mirrored against the simulation. Measured on ur5e at all-zero joints — SVA
+   (−817.2, −232.9, 62.8) mm vs Isaac (817.2, 232.9, 63.1) — and fixed by composing the
+   half turn into the spawn (`_UR_BASE_ROTATION_WXYZ`).
+
+   Fixing it exposed two further bugs. `SingleArticulation`'s `position`/`orientation`
+   kwargs do nothing on Isaac 6.1, and `set_world_pose` sets the *current* pose while
+   `world.reset()` restores the *default* — and the module resets on every arm creation,
+   so with two arms the last one built silently returned to the origin. The cell came up
+   with arm-b correct and arm-a mirrored, which reads as a layout problem rather than a
+   spawn bug.
+
+   `probes/verify_yaw_e2e.py` now checks it through the running machine: both arms land
+   within 0.3 mm of the SVA prediction, agree with the frame system exactly, and report
+   different positions from each other.
+
 2. **The planner is blind to the scenery and to both tools.** "Plans around obstacles"
    currently means "plans around the other arm's capsules". Props exist in Isaac only and
    are absent from the frame system, and the 0.12 m tool appears in neither the SVA nor
@@ -370,7 +378,7 @@ Ordered by what breaks worst. Items 1 and 2 gate phase 1.
 | risk | mitigation |
 |---|---|
 | planning latency too slow for a 2 h course | measured in phase 0, before anything depends on it |
-| Isaac `position` vs Viam `frame` disagree | asserted in phase 0; planner would otherwise plan in the wrong world |
+| ~~Isaac `position` vs Viam `frame` disagree~~ | resolved — see finding 1; verified end to end on both arms |
 | held part not in `world_state` → box swings through arm B | `qc:cell` attaches the part geometry to the moving arm on every motion between grasp and release; phase-1 test covers it |
 | viable scale window is only 0.04 wide | re-run `scale_study.py` after any layout change; reshape (bins outward) if phase 1 finds it tight |
 | gripper blocked on Devin | phase 1 needs no gripper |
