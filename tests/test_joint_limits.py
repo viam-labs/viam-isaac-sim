@@ -24,6 +24,8 @@ SVA = json.dumps({
     "joints": [
         {"id": "shoulder_pan_joint", "type": "revolute", "parent": "base_link",
          "axis": {"x": 0, "y": 0, "z": 1}, "max": 360, "min": -360},
+        {"id": "shoulder_lift_joint", "type": "revolute", "parent": "shoulder_link",
+         "axis": {"x": 0, "y": -1, "z": 0}, "max": 360, "min": -360},
         {"id": "elbow_joint", "type": "revolute", "parent": "upper_arm_link",
          "axis": {"x": 0, "y": -1, "z": 0}, "max": 180, "min": -180},
         {"id": "rail", "type": "prismatic", "parent": "base_link",
@@ -91,4 +93,42 @@ def test_the_cell_asks_for_a_limit():
     for arm in arms:
         assert arm["attributes"].get("joint_limit_deg") == 180, (
             f"{arm['name']} does not narrow its joint limits; the cell will wind up"
+        )
+
+
+def test_per_joint_override_can_be_asymmetric():
+    """A symmetric limit puts the wrap point on every joint at the same place.
+
+    Bounding this cell's arms at +-180 moved the ratchet from pan to shoulder-lift,
+    which then sat pinned at 180. An explicit [min, max] still spans one turn - so
+    there is exactly one solution per pose - but puts both ends where the arm never
+    travels.
+    """
+    out = joints_of(arm_with(
+        joint_limit_deg=180,
+        joint_limits_deg={"shoulder_lift_joint": [-270, 90]},
+    )._clamp_joint_limits(SVA_FMT, SVA))
+    assert out["shoulder_lift_joint"]["min"] == -270
+    assert out["shoulder_lift_joint"]["max"] == 90
+    # the scalar still governs the joints the map does not name
+    assert out["shoulder_pan_joint"]["min"] == -180
+
+
+def test_per_joint_override_alone_works_without_the_scalar():
+    out = joints_of(arm_with(
+        joint_limits_deg={"shoulder_lift_joint": [-270, 90]},
+    )._clamp_joint_limits(SVA_FMT, SVA))
+    assert out["shoulder_lift_joint"]["max"] == 90
+    assert out["shoulder_pan_joint"]["min"] == -360, "untouched without a scalar limit"
+
+
+def test_the_cell_pins_the_lift_joint():
+    from pathlib import Path
+    fragment = json.loads(
+        (Path(__file__).resolve().parents[1] / "fragments" / "qc-cell.json").read_text()
+    )
+    for arm in [c for c in fragment["components"] if c["type"] == "arm"]:
+        limits = arm["attributes"].get("joint_limits_deg", {})
+        assert limits.get("shoulder_lift_joint") == [-270, 90], (
+            f"{arm['name']} leaves shoulder_lift on the symmetric limit, where it pins"
         )

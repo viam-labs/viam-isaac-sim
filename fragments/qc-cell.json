@@ -46,6 +46,12 @@
     "and after two passes an arm sat at 270. Near 360 it jams. 180 covers every",
     "orientation, and the solutions these stations need peak at 174 deg.",
     "",
+    "shoulder_lift gets an explicit range because a symmetric limit puts the wrap point",
+    "on every joint in the same place, and this joint's working range - about [-174, 4]",
+    "- straddles 180. Bounded symmetrically it simply ratcheted there instead, sitting",
+    "pinned at 180 over a long run. [-270, 90] still spans one turn, so there is exactly",
+    "one solution per pose, but both ends are somewhere the arm never goes.",
+    "",
     "The belt is derived from CONVEYOR_CENTER/CONVEYOR_SIZE, not eyeballed: it runs along",
     "y (0.258 x 0.836), which an earlier draft had transposed to run along x and centred",
     "on the pick slot instead of the belt. The trays are still provisional.",
@@ -118,6 +124,7 @@
         "world": "sim-world",
         "asset": "ur5e",
         "joint_limit_deg": 180,
+        "joint_limits_deg": { "shoulder_lift_joint": [-270, 90] },
         "position": [0.0, -0.38, 0.3914],
         "end_effector_prim": "/World/arm_a/wrist_3_link/flange"
       }
@@ -139,6 +146,7 @@
         "world": "sim-world",
         "asset": "ur5e",
         "joint_limit_deg": 180,
+        "joint_limits_deg": { "shoulder_lift_joint": [-270, 90] },
         "position": [0.0, 0.38, 0.3914],
         "end_effector_prim": "/World/arm_b/wrist_3_link/flange"
       }

@@ -154,13 +154,32 @@ real margin.
 | clamp only (4 passes) | 179° | 176° | **7** | 0 |
 | clamp + floor + base yaw (4 passes) | 179° | **117°** | **0** | 0 |
 | same, 6 passes (~180 moves) | **180°** | 117° | 0 | 1 |
+| + asymmetric lift limit, retreat moved (6 passes) | **171°** | **109°** | **0** | **0** |
 
 The clamp alone bounds the drift but is not sufficient: with the workspace still straddling
 the wrap point, both arms crept to the limit and then stalled seven times trying to track
 paths that hug it. Adding the base yaw moved arm-b's peak down to 117° and removed the
 stalls entirely.
 
-### The residual, stated plainly
+### Residual: closed
+
+Two more changes closed it.
+
+**An asymmetric range for shoulder-lift.** A symmetric limit puts the wrap point at the
+same place on every joint, so bounding pan at ±180 simply moved the ratchet to lift, which
+then sat pinned at 180. That joint works in about [−174°, 4°], so `[-270, 90]` still spans
+exactly one turn — one solution per pose — while putting both ends where the arm never
+travels. `joint_limits_deg` takes the per-joint map.
+
+**The probe was feeding the bug.** `windup_check` retreated each idle arm to −x, behind
+the base. With the 180° base yaw each arm faces +x, so that pose sits on bearing 180 in
+its own base frame: the pan wrap point, visited between every single station. Moving the
+retreat in front of the arms was worth as much as any module change.
+
+Together: 6 passes, peak 171°/109°, no stalls, no planning failures, and nothing within
+5° of a limit. The earlier residual below is kept for the record.
+
+### The residual as it stood
 
 **arm-a's j1 reaches exactly 180° and stays there**, and a 6-pass run produced one
 planning failure. Clamping puts a wrap discontinuity at ±180 on *every* joint, and

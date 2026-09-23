@@ -38,12 +38,19 @@ from viam.services.motion import MotionClient  # noqa: E402
 FQDN = os.environ.get("QC_FQDN", "viam-103-qc-cell-main.pgn074cus0.viam.cloud")
 STATIONS = json.loads((Path(__file__).resolve().parent / "stations.json").read_text())
 LIMIT_DEG = 180.0
+# shoulder_lift is given an asymmetric range in the cell config, so its bound is not the
+# symmetric one. Keep them together here or the check reports a false exceedance.
+JOINT_LIMITS = {1: (-270.0, 90.0)}
 # The served limit needs headroom greater than the 0.5 deg settle tolerance: an arm that
 # settles at 180.3 after a goal of 179.8 fails its NEXT move's start check, before
 # planning. Peaking this close to the limit is not yet a failure, so it is reported as a
 # warning - the point is to see drift while it is still drift.
 MARGIN_DEG = 5.0
-HOMES = {"arm-a": (-300.0, -380.0, 850.0), "arm-b": (-300.0, 380.0, 850.0)}
+# Retreat in FRONT of the arms, not behind them. With the 180 deg base yaw each arm
+# faces +x, so a pose at -x sits on bearing 180 in its own base frame - exactly the pan
+# wrap point. Parking there between every station fed the ratchet this check exists to
+# measure; the probe was part of the bug.
+HOMES = {"arm-a": (300.0, -380.0, 900.0), "arm-b": (300.0, 380.0, 900.0)}
 
 
 async def main():
@@ -108,14 +115,20 @@ async def main():
         exceeded = []
         for name, values in worst.items():
             print(f"{name:>7}  {[round(v) for v in values]}")
-            over = [f"j{i}={v:.0f}" for i, v in enumerate(values) if v > LIMIT_DEG + 1]
+            over = []
+            for i, v in enumerate(values):
+                low, high = JOINT_LIMITS.get(i, (-LIMIT_DEG, LIMIT_DEG))
+                if v > max(abs(low), abs(high)) + 1:
+                    over.append(f"j{i}={v:.0f}")
             if over:
                 exceeded.append(f"{name}: {', '.join(over)}")
 
         tight = []
         for name, values in worst.items():
             for i, v in enumerate(values):
-                if LIMIT_DEG - MARGIN_DEG < v <= LIMIT_DEG + 1:
+                low, high = JOINT_LIMITS.get(i, (-LIMIT_DEG, LIMIT_DEG))
+                bound = max(abs(low), abs(high))
+                if bound - MARGIN_DEG < v <= bound + 1:
                     tight.append(f"{name} j{i}={v:.0f}")
         if tight:
             print(f"  WARNING: within {MARGIN_DEG:.0f} deg of the limit: {', '.join(tight)}")

@@ -28,6 +28,12 @@ Attributes:
                                (a urdf is passed through), and it guards the planner,
                                not isaac - a direct move_to_joint_positions can still
                                wind a joint up.
+  joint_limits_deg (object)  - per-joint [min, max] in degrees, e.g.
+                               {"shoulder_lift_joint": [-270, 90]}. Overrides
+                               joint_limit_deg for the joints it names. Use it when a
+                               joint's working range straddles the symmetric limit: a
+                               span of 360 deg still admits only one solution per pose,
+                               but the ends can be put where the arm never travels.
   kinematics_url (string)    - where to fetch the kinematics file served by
                                GetKinematics (.json = SVA, .urdf = URDF;
                                file:// URLs work). Known assets with official
@@ -269,33 +275,50 @@ class IsaacArm(Arm, EasyResource):
         move_to_joint_positions can still wind up. Sending the arms to a known
         configuration between rounds is what covers that path.
 
+        A symmetric ±limit is not always the right shape. Clamping puts the wrap point
+        at the limit on *every* joint, and a joint whose working range straddles that
+        just ratchets there instead - measured here, bounding pan at ±180 moved the
+        problem from pan to shoulder-lift, which then sat pinned at 180. `joint_limits_deg`
+        gives one joint an explicit [min, max] so the discontinuity can be placed
+        somewhere the arm never goes: this cell's lift works in about [-174, 4], so
+        [-270, 90] spans a single turn while keeping both ends far from the traffic.
+
         Only SVA json is rewritten. A urdf is passed through untouched.
         """
         limit = self._attrs.get("joint_limit_deg")
-        if limit is None:
+        per_joint = self._attrs.get("joint_limits_deg") or {}
+        if limit is None and not per_joint:
             return data
-        limit = abs(float(limit))
         if fmt != KinematicsFileFormat.KINEMATICS_FILE_FORMAT_SVA:
             self.logger.warning(
-                "%s: joint_limit_deg is only applied to SVA kinematics; "
-                "this arm serves a urdf, so the limit is being ignored", self.name,
+                "%s: joint limits are only applied to SVA kinematics; this arm serves "
+                "a urdf, so they are being ignored", self.name,
             )
             return data
+        limit = abs(float(limit)) if limit is not None else None
 
         model = json.loads(data)
         narrowed = []
         for joint in model.get("joints", []):
             if joint.get("type") != "revolute":
                 continue
+            joint_id = joint.get("id")
             before = (joint.get("min"), joint.get("max"))
-            joint["min"] = max(float(joint.get("min", -limit)), -limit)
-            joint["max"] = min(float(joint.get("max", limit)), limit)
+            override = per_joint.get(joint_id)
+            if override is not None:
+                low, high = (float(v) for v in override)
+            elif limit is not None:
+                low, high = -limit, limit
+            else:
+                continue
+            joint["min"] = max(float(joint.get("min", low)), low)
+            joint["max"] = min(float(joint.get("max", high)), high)
             if (joint["min"], joint["max"]) != before:
-                narrowed.append(f"{joint.get('id')} {before} -> "
+                narrowed.append(f"{joint_id} {before} -> "
                                 f"({joint['min']}, {joint['max']})")
         if narrowed:
-            self.logger.info("%s: narrowed joint limits to +-%g deg: %s",
-                             self.name, limit, "; ".join(narrowed))
+            self.logger.info("%s: narrowed joint limits: %s",
+                             self.name, "; ".join(narrowed))
         return json.dumps(model).encode()
 
     async def get_kinematics(self, **kwargs) -> Tuple[KinematicsFileFormat.ValueType, bytes]:
