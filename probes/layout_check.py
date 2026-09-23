@@ -110,8 +110,12 @@ async def main():
                 got = "reached"
             except Exception as exc:  # noqa: BLE001
                 text = str(exc).lower()
+                # "stalled" is an EXECUTION failure - the plan was made and the arm was
+                # driven, and it failed to settle. Folding it into "no plan" once made a
+                # 30 s execution timeout look like a planner that could not find a route.
                 got = ("too far" if "too far" in text
                        else "collision" if "collision" in text or "obstacle" in text
+                       else "stalled" if "stall" in text
                        else "no plan")
             elapsed = (time.perf_counter() - start) * 1000
             timings.append(elapsed)
