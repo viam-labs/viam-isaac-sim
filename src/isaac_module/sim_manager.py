@@ -422,8 +422,14 @@ class SimManager:
             self._isaac.SingleXFormPrim(prim_path).set_world_pose(position=position)
             return
 
+        if prop.get("children"):
+            self._spawn_composite_prop(prop, name, prim_path, position)
+            return
+
         if kind != "cube":
-            raise ValueError(f"prop {name}: unknown type {kind!r} (cube or usd)")
+            raise ValueError(
+                f"prop {name}: unknown type {kind!r} (cube, usd, or a cube with children)"
+            )
 
         kwargs: Dict[str, Any] = dict(
             prim_path=prim_path,
@@ -437,6 +443,91 @@ class SimManager:
             kwargs["color"] = np.array([float(v) for v in prop["color"]])
         cls = self._isaac.FixedCuboid if prop.get("fixed") else self._isaac.DynamicCuboid
         self.world.scene.add(cls(**kwargs))
+
+    _CHILD_SHAPES = ("cube", "cylinder", "capsule", "cone", "sphere")
+
+    def _spawn_composite_prop(
+        self, prop: Dict[str, Any], name: str, prim_path: str, position: List[float]
+    ) -> None:
+        """A prop made of several shapes that behave as one part.
+
+        A real part is rarely a box. A stamped shell has a formed crown, a door, a
+        flag - and a defect mark is a patch on one of its faces. Both are the same
+        problem: several pieces of geometry that have to move as one thing.
+
+        So the parent carries the rigid body and the children carry only geometry and
+        collision. A child with its own RigidBodyAPI would be a separate part that
+        happens to start nearby, and it would fall off the moment the sim stepped.
+
+        The parent's own `size`/`scale` are not drawn. They stay the part's bounding
+        box, which is what `prop_obstacles` reports to the planner, so a composite is
+        still one obstacle rather than a cloud of them.
+        """
+        from pxr import Gf, PhysxSchema, UsdGeom, UsdPhysics
+
+        from .spatial import to_vec3
+
+        stage = self._isaac.omni_usd.get_context().get_stage()
+        root = UsdGeom.Xform.Define(stage, prim_path)
+        root_prim = root.GetPrim()
+        root.AddTranslateOp().Set(Gf.Vec3d(*[float(v) for v in position]))
+
+        fixed = bool(prop.get("fixed"))
+        if not fixed:
+            UsdPhysics.RigidBodyAPI.Apply(root_prim)
+            mass = UsdPhysics.MassAPI.Apply(root_prim)
+            mass.CreateMassAttr(float(prop.get("mass_kg", 0.4)))
+            PhysxSchema.PhysxRigidBodyAPI.Apply(root_prim)
+
+        default_color = prop.get("color")
+        for index, child in enumerate(prop["children"]):
+            shape = str(child.get("shape", "cube"))
+            if shape not in self._CHILD_SHAPES:
+                raise ValueError(
+                    f"prop {name}: child {index} has unknown shape {shape!r}; "
+                    f"one of {self._CHILD_SHAPES}"
+                )
+            child_name = _prim_name(str(child.get("name", f"part_{index}")))
+            child_path = f"{prim_path}/{child_name}"
+            if shape == "cube":
+                geom = UsdGeom.Cube.Define(stage, child_path)
+                geom.CreateSizeAttr(1.0)
+                extent = 0.5
+            elif shape == "sphere":
+                geom = UsdGeom.Sphere.Define(stage, child_path)
+                geom.CreateRadiusAttr(float(child.get("radius", 0.05)))
+                extent = float(child.get("radius", 0.05))
+            else:
+                define = {"cylinder": UsdGeom.Cylinder, "capsule": UsdGeom.Capsule,
+                          "cone": UsdGeom.Cone}[shape]
+                geom = define.Define(stage, child_path)
+                geom.CreateRadiusAttr(float(child.get("radius", 0.05)))
+                geom.CreateHeightAttr(float(child.get("height", 0.1)))
+                geom.CreateAxisAttr(str(child.get("axis", "Z")))
+                extent = max(float(child.get("radius", 0.05)),
+                             float(child.get("height", 0.1)) / 2.0)
+            # An implicit prim keeps its default extent unless told otherwise, which
+            # leaves bounds - and anything computed from them - describing a unit shape.
+            geom.CreateExtentAttr([Gf.Vec3f(-extent, -extent, -extent),
+                                   Gf.Vec3f(extent, extent, extent)])
+
+            xform = UsdGeom.Xformable(geom.GetPrim())
+            xform.AddTranslateOp().Set(Gf.Vec3d(*to_vec3(child.get("position"))))
+            rotation = child.get("rotation_xyz_deg")
+            if rotation:
+                xform.AddRotateXYZOp().Set(Gf.Vec3f(*[float(v) for v in rotation]))
+            if shape == "cube":
+                scale = child.get("scale") or (child.get("size", 0.05),) * 3
+                xform.AddScaleOp().Set(Gf.Vec3f(*[float(v) for v in scale]))
+
+            UsdPhysics.CollisionAPI.Apply(geom.GetPrim())
+            colour = child.get("color", default_color)
+            if colour is not None:
+                geom.CreateDisplayColorAttr(
+                    [Gf.Vec3f(*[float(v) for v in colour])])
+
+        LOGGER.info("prop %s: composite of %d shapes, %s",
+                    name, len(prop["children"]), "fixed" if fixed else "dynamic")
 
     def _require_booted(self) -> None:
         if not self._booted.is_set():
