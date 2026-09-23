@@ -341,16 +341,33 @@ Ordered by what breaks worst. Items 1 and 2 gate phase 1.
    within 0.3 mm of the SVA prediction, agree with the frame system exactly, and report
    different positions from each other.
 
-2. **The planner is blind to the scenery and to both tools.** "Plans around obstacles"
-   currently means "plans around the other arm's capsules". Props exist in Isaac only and
-   are absent from the frame system, and the 0.12 m tool appears in neither the SVA nor
-   `get_geometries` — so the offset this plan spends a page on for reach is invisible to
-   the planner. Add a tool frame as a frame-config child of each arm (carrying a capsule),
-   and pass belt and trays as `world_state` obstacles on every call.
-3. **Do not port `ee_pose()`.** It assumes the URDF `ee_link` convention (+x out of the
-   flange); in `ur5e.json` the last link is a −99.6 mm translation along y, so the flange
-   normal is −y and a ported `ee_pose` would command the wrist 90° off. The tool frame in
-   item 2 replaces it: `Move` the tool frame to `tool_pose()` directly.
+2. ~~**The planner is blind to the scenery and to both tools.**~~ **Resolved.** Confirmed
+   the hard way first: asked to put a flange inside the belt, the planner planned straight
+   there and the arm drove in until the isaac collider stalled it. Nothing is
+   auto-collected from components — obstacles have to be passed per call.
+
+   `sim-world` now answers `DoCommand {"command": "obstacles"}` with every cube prop as
+   `{label, fixed, center_mm, dims_mm}`. Reported rather than published as component
+   geometry because `fixed` is not static: a fixed belt is an obstacle forever, while a
+   dynamic part is an obstacle until an arm grasps it and then becomes part of *that arm*
+   — the same prop, two roles, switching mid-round. Only the caller knows which.
+
+   The tool is a `Transform` parented to the arm's end-effector frame, not an entry in
+   `obstacles`: obstacles resolve to world once at plan start, so an obstacle "on" the arm
+   would sit wherever the arm happened to be. A transform with a `physical_object` is
+   carried by its parent and travels with the arm. The held part will use the same
+   mechanism.
+
+   `probes/obstacle_check.py` verifies all of it, with a control: a pose the flange can
+   legally reach must still *succeed* without the tool declared and be *refused* once it
+   is. Both hold, which is also what proves the tool axis is right.
+
+3. **Do not port `ee_pose()`.** Settled while building the tool geometry. The SVA's
+   `ee_link` carries `ov_degrees (0, −1, 0, 90)`, and a Viam orientation vector names the
+   frame's **z-axis**, so the end-effector frame's +z is the direction the final
+   (0, −99.6, 0) translation continues — out of the flange. **The tool runs along +z of
+   the arm frame.** `cell.py`'s `EE_FROM_TOOL` assumes +x, the URDF `ee_link` convention,
+   so porting it would command the wrist 90° off and read as a tolerance problem.
 4. **Execution does not track the plan.** `move_through_joint_positions` sets joint targets
    and lets the articulation drive there at its own gains, unsynchronized, so the path
    between coarse waypoints bows off the segment the planner checked; `MoveOptions` are
@@ -379,7 +396,7 @@ Ordered by what breaks worst. Items 1 and 2 gate phase 1.
 |---|---|
 | planning latency too slow for a 2 h course | measured in phase 0, before anything depends on it |
 | ~~Isaac `position` vs Viam `frame` disagree~~ | resolved — see finding 1; verified end to end on both arms |
-| held part not in `world_state` → box swings through arm B | `qc:cell` attaches the part geometry to the moving arm on every motion between grasp and release; phase-1 test covers it |
+| held part not in `world_state` → box swings through arm B | mechanism now proven: a `Transform` parented to the arm's EE frame, same as the tool. `qc:cell` attaches the part between grasp and release; phase-1 test covers it |
 | viable scale window is only 0.04 wide | re-run `scale_study.py` after any layout change; reshape (bins outward) if phase 1 finds it tight |
 | gripper blocked on Devin | phase 1 needs no gripper |
 | two Isaac instances | one at a time — stop the isaac-arcade sim before testing this one |

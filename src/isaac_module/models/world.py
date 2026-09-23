@@ -16,6 +16,12 @@ Attributes:
   physics_dt / rendering_dt (float) - sim step sizes, default 1/60
   boot_timeout_sec (float)          - how long to wait for kit to boot
   kit_log_level (string)            - kit console verbosity, default "warning"
+DoCommand "obstacles" returns every cube prop as {label, fixed, center_mm, dims_mm},
+ready to become viam Geometry obstacles. The motion service cannot see props on its own -
+they live in isaac, not in the frame system - so callers must pass these in `world_state`
+on every Move or the arm will plan straight through the scenery.
+
+Attributes:
   props (list)                      - objects spawned into the scene at boot:
                                       {"name", "type": "cube"|"usd",
                                        "position": [x,y,z] meters,
@@ -104,6 +110,8 @@ class IsaacWorld(Generic, EasyResource):
         if cmd == "reset":
             sim.reset()
             return {"ok": True}
+        if cmd == "obstacles":
+            return {"obstacles": sim.prop_obstacles()}
         if cmd == "add_usd":
             usd_path = str(command.get("usd_path", ""))
             prim_path = str(command.get("prim_path", ""))
@@ -115,5 +123,6 @@ class IsaacWorld(Generic, EasyResource):
             )
             return {"ok": True}
         raise ValueError(
-            f"unknown command {cmd!r}; supported: status, play, pause, reset, add_usd"
+            f"unknown command {cmd!r}; supported: status, play, pause, reset, "
+            f"obstacles, add_usd"
         )

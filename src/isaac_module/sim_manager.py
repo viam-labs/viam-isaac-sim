@@ -368,6 +368,44 @@ class SimManager:
         if not self.mock:
             self.run(lambda: self.world.reset())
 
+    def prop_obstacles(self) -> List[Dict[str, Any]]:
+        """Every prop as a box the viam motion service can treat as an obstacle.
+
+        Props are spawned into isaac and exist nowhere in viam's frame system, so the
+        planner cannot see them: asked to put a flange inside the belt it plans straight
+        there, and the arm drives in until the collider stalls it. Callers have to pass
+        these in `world_state` on every Move.
+
+        Reported rather than published as component geometry because `fixed` is not a
+        static property of the scene. A fixed belt is an obstacle forever; a dynamic part
+        is an obstacle while it sits on the belt and becomes part of the *moving arm* once
+        it is grasped - the same prop, two roles, switching mid-round. Only the caller
+        knows which, so it gets the facts and decides.
+
+        Lengths are millimetres, because that is what viam's geometry messages use. A
+        cube prop's edge is `size` scaled per axis, so dims are size * scale.
+        """
+        cfg = self.cfg
+        if cfg is None:
+            return []
+        out: List[Dict[str, Any]] = []
+        for prop in cfg.props:
+            if str(prop.get("type", "cube")) != "cube":
+                # A usd prop's extent is whatever the asset says; the module does not
+                # know it without reading the stage, so do not guess a box for it.
+                continue
+            size = float(prop.get("size", 0.05))
+            scale = prop.get("scale") or (1.0, 1.0, 1.0)
+            scale = [float(v) for v in scale]
+            position = [float(v) for v in (prop.get("position") or (0.0, 0.0, 0.0))]
+            out.append({
+                "label": str(prop.get("name", "")),
+                "fixed": bool(prop.get("fixed", False)),
+                "center_mm": [v * 1000.0 for v in position],
+                "dims_mm": [size * scale[i] * 1000.0 for i in range(3)],
+            })
+        return out
+
     def status(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
             "booted": self._booted.is_set(),
