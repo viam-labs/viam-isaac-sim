@@ -185,11 +185,23 @@ async def main():
         await go("arm-b", HOMES["arm-b"], "arm-b clears")
         await go("arm-a", at(contact + 150), "arm-a  approach the carton")
         await go("arm-a", at(contact), "arm-a  down to the carton", with_part=False)
+        async def say(tag):
+            pose = (await world.do_command(
+                {"command": "prop_poses", "names": ["part"]}))["props"]["part"]
+            ee = await Arm.from_robot(robot, "arm-a").get_end_position()
+            held = (await gripper.is_holding_something()).is_holding_something
+            print(f"    {tag:>16}: flange z={ee.z:7.1f}  part z={pose['position_mm'][2]:7.1f}"
+                  f"  holding={held}")
+
+        print(f"    pick: part at z={pz:.1f}, contact flange z={contact:.1f}")
+        await say("at contact")
         recorder.caption = "suction-a  grab"
         caught = await gripper.grab()
         await asyncio.sleep(0.6)
+        await say("after grab")
         await go("arm-a", at(contact + 260), f"arm-a  lift (holding={caught})",
                  with_part=False)
+        await say("after lift")
         await go("arm-a", (px - 120, py + 220, contact + 260), "arm-a  carry",
                  with_part=False)
         recorder.caption = "suction-a  release"

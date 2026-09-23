@@ -37,6 +37,7 @@ def grasp_height(props, part_pose):
     half = (part["dims_mm"][2] / 2.0) if part else 0.0
     return part_pose["position_mm"][2] + half + TOOL_LENGTH_MM
 from viam.components.arm import Arm  # noqa: E402
+from viam.components.camera import Camera  # noqa: E402
 from viam.components.generic import Generic  # noqa: E402
 from viam.components.gripper import Gripper  # noqa: E402
 from viam.proto.common import (  # noqa: E402
@@ -52,6 +53,10 @@ CARRIED_TOLERANCE_MM = 30.0
 
 async def main():
     attempts = int(sys.argv[1]) if len(sys.argv) > 1 else 5
+    # `--film` pulls camera frames throughout, the way record_cell.py does. The pick is
+    # 5/5 unfilmed and 0/N when recorded, and the scripts otherwise do the same moves -
+    # so the question is whether rendering is what breaks it.
+    filming = "--film" in sys.argv
     robot = await RobotClient.at_address(
         FQDN,
         RobotClient.Options.with_api_key(
@@ -64,6 +69,20 @@ async def main():
         gripper = Gripper.from_robot(robot, "suction-a")
         arm = Arm.from_robot(robot, "arm-a")
 
+        frames = {"n": 0}
+        camera = Camera.from_robot(robot, "overview-cam") if filming else None
+
+        async def film():
+            while filming:
+                try:
+                    await camera.get_images()
+                    frames["n"] += 1
+                except Exception:  # noqa: BLE001
+                    pass
+                await asyncio.sleep(1.0 / 12)
+
+        film_task = asyncio.create_task(film()) if filming else None
+        print(f"filming: {filming}")
         held, claimed, disagreed = 0, 0, 0
         print(f"{'try':>4} {'says':>6} {'status':>8} {'part rose':>10} {'verdict':>24}")
         for attempt in range(1, attempts + 1):
@@ -139,6 +158,10 @@ async def main():
             print(f"{attempt:>4} {str(says):>6} {status:>8} {rose:>9.1f}mm {verdict:>24}")
             await gripper.open()
 
+        if film_task:
+            filming = False
+            film_task.cancel()
+            print(f"pulled {frames['n']} frames during the run")
         print(f"\nactually carried {held}/{attempts}; "
               f"claimed to be holding {claimed}/{attempts}; "
               f"disagreed {disagreed}/{attempts}")
