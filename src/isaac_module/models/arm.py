@@ -9,6 +9,12 @@ Attributes:
   position ([x,y,z] meters)  - spawn position
   end_effector_prim (string) - prim path whose world pose is reported by
                                GetEndPosition
+  ignore_base_rotation (bool)- skip the known asset's fixed base rotation. UR assets
+                               in isaac are URDF imports rooted at ROS base_link while
+                               viam's kinematics use the controller's base frame, a half
+                               turn apart, so the module composes that offset into the
+                               spawn. Set this only for a USD you have already authored
+                               in the kinematics frame.
   move_timeout_sec (float)   - max time to wait for a move (default 30)
   kinematics_url (string)    - where to fetch the kinematics file served by
                                GetKinematics (.json = SVA, .urdf = URDF;

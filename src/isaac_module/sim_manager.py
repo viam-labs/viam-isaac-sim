@@ -30,21 +30,44 @@ LOGGER = getLogger("viam-isaac-sim")
 # path as a fallback - the first candidate that exists is used.
 _UR_KINEMATICS = "https://raw.githubusercontent.com/viam-modules/universal-robots/main/src/kinematics"
 
+# Isaac's Universal Robots assets are URDF imports, so their root prim is ROS
+# `base_link`. Viam's UR kinematics are expressed in the UR *controller's* `base`
+# frame, and the two differ by a half turn about Z. Spawning the USD unrotated
+# therefore mirrors every x and y between what the motion service plans and what
+# Isaac simulates - the planner returns a clear path and the arm drives elsewhere.
+#
+# Measured on ur5e, all joints zero, USD spawned at the origin with identity
+# orientation: Isaac puts the flange at (817.2, 232.9, 63.1) mm while the SVA chain
+# gives (-817.2, -232.9, 62.8). Composing this rotation into the spawn lines them up.
+_UR_BASE_ROTATION_WXYZ = (0.0, 0.0, 0.0, 1.0)  # 180 deg about Z
+
 KNOWN_ASSETS: Dict[str, Dict[str, Any]] = {
     "ur3e": {
         "usd": ["/Isaac/Robots/UniversalRobots/ur3e/ur3e.usd"],
         "kinematics": f"{_UR_KINEMATICS}/ur3e.json",
+        "base_rotation_wxyz": _UR_BASE_ROTATION_WXYZ,
     },
     "ur5e": {
         "usd": ["/Isaac/Robots/UniversalRobots/ur5e/ur5e.usd"],
         "kinematics": f"{_UR_KINEMATICS}/ur5e.json",
+        "base_rotation_wxyz": _UR_BASE_ROTATION_WXYZ,
     },
-    "ur10": {"usd": ["/Isaac/Robots/UniversalRobots/ur10/ur10.usd"]},
-    "ur10e": {"usd": ["/Isaac/Robots/UniversalRobots/ur10e/ur10e.usd"]},
-    "ur16e": {"usd": ["/Isaac/Robots/UniversalRobots/ur16e/ur16e.usd"]},
+    "ur10": {
+        "usd": ["/Isaac/Robots/UniversalRobots/ur10/ur10.usd"],
+        "base_rotation_wxyz": _UR_BASE_ROTATION_WXYZ,
+    },
+    "ur10e": {
+        "usd": ["/Isaac/Robots/UniversalRobots/ur10e/ur10e.usd"],
+        "base_rotation_wxyz": _UR_BASE_ROTATION_WXYZ,
+    },
+    "ur16e": {
+        "usd": ["/Isaac/Robots/UniversalRobots/ur16e/ur16e.usd"],
+        "base_rotation_wxyz": _UR_BASE_ROTATION_WXYZ,
+    },
     "ur20": {
         "usd": ["/Isaac/Robots/UniversalRobots/ur20/ur20.usd"],
         "kinematics": f"{_UR_KINEMATICS}/ur20.json",
+        "base_rotation_wxyz": _UR_BASE_ROTATION_WXYZ,
     },
     "franka": {
         "usd": [
@@ -455,9 +478,9 @@ class SimManager:
         return self._cached_handle("arm", name, attrs, factory)
 
     def _create_arm_isaac(self, name: str, attrs: Dict[str, Any]) -> "IsaacArmHandle":
-        from .spatial import to_vec3
+        from .spatial import quat_mul, to_vec3
 
-        usd, _ = self._resolve_usd(attrs)
+        usd, meta = self._resolve_usd(attrs)
         prim_path = attrs.get("prim_path") or f"/World/{_prim_name(name)}"
         if usd:
             self._isaac.add_reference_to_stage(usd_path=usd, prim_path=prim_path)
@@ -466,11 +489,35 @@ class SimManager:
         kwargs: Dict[str, Any] = dict(
             prim_path=prim_path, name=name, position=list(position)
         )
-        if attrs.get("orientation_wxyz") is not None:
-            kwargs["orientation"] = [float(v) for v in attrs["orientation_wxyz"]]
+
+        # The frame config orients the arm's *kinematic base*, which for some assets is
+        # not the USD's root prim (see _UR_BASE_ROTATION_WXYZ). Fold the asset's fixed
+        # offset in here, on the isaac side only: the frame system must keep describing
+        # the base the kinematics file describes, or the planner and the simulation stop
+        # agreeing about which way the arm faces.
+        orientation = attrs.get("orientation_wxyz")
+        orientation = (
+            tuple(float(v) for v in orientation) if orientation is not None
+            else (1.0, 0.0, 0.0, 0.0)
+        )
+        base_rotation = meta.get("base_rotation_wxyz")
+        if attrs.get("ignore_base_rotation"):
+            base_rotation = None
+        if base_rotation is not None:
+            orientation = quat_mul(orientation, tuple(float(v) for v in base_rotation))
+        if orientation != (1.0, 0.0, 0.0, 0.0):
+            kwargs["orientation"] = list(orientation)
         art = self._isaac.SingleArticulation(**kwargs)
         self.world.scene.add(art)
         self.world.reset()
+
+        # SingleArticulation's position/orientation kwargs are not enough on their own:
+        # measured on isaac 6.1, an arm constructed with them came up at the origin with
+        # identity rotation regardless, so a second arm silently stacked on the first and
+        # the base rotation above was discarded. Props and cameras in this file already
+        # place themselves with an explicit set_world_pose; the arm has to as well.
+        # Harmless if a future isaac honours the kwargs - this just sets the same pose.
+        art.set_world_pose(position=list(position), orientation=list(orientation))
 
         ee = None
         ee_path = attrs.get("end_effector_prim")

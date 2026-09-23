@@ -29,6 +29,9 @@
     "model input - far below what the detector can see. 20.83 deg is the arcade's 57 mm",
     "lens, which frames 159 mm and keeps the mark at 24 px.",
     "",
+    "end_effector_prim is what GetEndPosition reports; without it the call raises. The",
+    "flange prim is also the one the yaw check compares against motion.GetPose.",
+    "",
     "The belt is derived from CONVEYOR_CENTER/CONVEYOR_SIZE, not eyeballed: it runs along",
     "y (0.258 x 0.836), which an earlier draft had transposed to run along x and centred",
     "on the pick slot instead of the belt. The trays are still provisional.",
@@ -96,7 +99,8 @@
       "attributes": {
         "world": "sim-world",
         "asset": "ur5e",
-        "position": [0.0, -0.38, 0.3914]
+        "position": [0.0, -0.38, 0.3914],
+        "end_effector_prim": "/World/arm_a/flange"
       }
     },
     {
@@ -111,7 +115,8 @@
       "attributes": {
         "world": "sim-world",
         "asset": "ur5e",
-        "position": [0.0, 0.38, 0.3914]
+        "position": [0.0, 0.38, 0.3914],
+        "end_effector_prim": "/World/arm_b/flange"
       }
     },
     {
