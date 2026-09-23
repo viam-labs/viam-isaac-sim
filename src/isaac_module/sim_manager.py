@@ -75,6 +75,9 @@ class SimConfig:
     boot_timeout: float = 300.0
     # IP the livestream advertises to clients; auto-detected if empty
     livestream_public_ip: str = ""
+    # resolution kit renders (and therefore streams) at
+    livestream_width: int = 1280
+    livestream_height: int = 720
     # props to spawn into the scene at boot; each entry:
     #   {"type": "cube"|"usd", "name": ..., "position": [x,y,z] (m),
     #    "size": edge_m, "scale": [sx,sy,sz], "color": [r,g,b] 0-1,
@@ -227,7 +230,25 @@ class SimManager:
         level = cfg.kit_log_level.capitalize()
         sys.argv.append(f"--/log/outputStreamLevel={level}")
 
-        self._sim_app = SimulationApp({"headless": cfg.headless})
+        streaming = cfg.livestream and cfg.headless
+        launch: Dict[str, Any] = {"headless": cfg.headless}
+        if streaming:
+            # SimulationApp hides kit's UI whenever headless is set, which
+            # leaves a connected streaming client looking at an empty frame.
+            # These mirror isaacsim.exp.full.streaming and the livestream
+            # standalone example: keep the UI, render it at a size worth
+            # streaming, and show the default grid.
+            launch.update(
+                hide_ui=False,
+                width=cfg.livestream_width,
+                height=cfg.livestream_height,
+                window_width=cfg.livestream_width,
+                window_height=cfg.livestream_height,
+                renderer="RaytracedLighting",
+                display_options=3286,
+            )
+
+        self._sim_app = SimulationApp(launch)
 
         try:
             import carb.settings
@@ -236,7 +257,7 @@ class SimManager:
         except Exception:
             pass
 
-        if cfg.livestream and cfg.headless:
+        if streaming:
             try:
                 try:
                     from isaacsim.core.utils.extensions import enable_extension
@@ -244,10 +265,20 @@ class SimManager:
                     from omni.isaac.core.utils.extensions import enable_extension
 
                 ip = cfg.livestream_public_ip or _local_ip()
-                self._sim_app.set_setting("/app/livestream/enabled", True)
+                self._sim_app.set_setting("/app/window/drawMouse", True)
+                # the client asks to resize the stream as soon as it connects;
+                # without this the request is refused and the view stays blank
+                self._sim_app.set_setting("/app/livestream/allowResize", True)
+                self._sim_app.set_setting("/app/livestream/port", 49100)
                 if ip:
                     self._sim_app.set_setting("/app/livestream/publicEndpointAddress", ip)
-                enable_extension("omni.kit.livestream.webrtc")
+                # 5.0 ships the streaming service under omni.services; 4.5 and
+                # older only have the kit extension
+                for ext in ("omni.services.livestream.nvcf", "omni.kit.livestream.webrtc"):
+                    if enable_extension(ext):
+                        break
+                else:
+                    raise RuntimeError("no livestream extension could be enabled")
                 LOGGER.info(
                     "livestream enabled - connect the 'Isaac Sim WebRTC Streaming "
                     "Client' app to %s (TCP 49100 + UDP 47998 must be reachable)",
