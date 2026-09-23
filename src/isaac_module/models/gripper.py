@@ -29,6 +29,7 @@ Attributes:
 """
 
 import asyncio
+import math
 from typing import Any, ClassVar, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from typing_extensions import Self
@@ -137,19 +138,20 @@ class IsaacGripper(Gripper, EasyResource):
         kinematics file nor the isaac articulation, so a path can clear the flange by a
         millimetre and put the cup through the bench.
         """
-        # Reported in the gripper's own frame, where +z is the tool axis - the viam
-        # convention, NOT the parent prim's +x that `offset` uses. The two are only the
-        # same cup seen from two frames.
+        # Reported in the gripper's own frame, where +z is the tool axis. `offset` is in
+        # the PARENT PRIM's frame, where the tool runs along +x, so its components cannot
+        # be copied across: doing that put the cup 120 mm sideways. Only its magnitude -
+        # how far the cup stands off along the tool - is frame-independent, so use that
+        # and lay the capsule along +z.
         spec = self._attrs.get("geometry") or {}
         radius = float(spec.get("radius_mm", _DEFAULT_RADIUS_MM))
-        length = float(spec.get("length_mm", _DEFAULT_LENGTH_MM))
-        offset = [float(v) * 1000.0 for v in (self._attrs.get("offset") or (0, 0, 0))]
+        offset = [float(v) for v in (self._attrs.get("offset") or (0, 0, 0))]
+        standoff = math.sqrt(sum(v * v for v in offset)) * 1000.0
+        length = float(spec.get("length_mm", standoff or _DEFAULT_LENGTH_MM))
         return [
             Geometry(
-                center=Pose(
-                    x=offset[0], y=offset[1], z=offset[2] + length / 2.0,
-                    o_x=0, o_y=0, o_z=1, theta=0,
-                ),
+                center=Pose(x=0.0, y=0.0, z=length / 2.0,
+                            o_x=0, o_y=0, o_z=1, theta=0),
                 capsule=Capsule(radius_mm=radius, length_mm=length),
                 label=f"{self.name}-cup",
             )

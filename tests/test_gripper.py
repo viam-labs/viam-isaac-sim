@@ -90,13 +90,19 @@ def test_geometry_follows_the_configured_offset():
     manager._booted.set()
     manager._handles.pop("suction", None)
     try:
+        # The offset is in the PARENT prim's frame, where the tool is +x - which is how
+        # the cell configures it. The geometry is reported in the viam frame, where the
+        # tool is +z. Copying components across put the cup 120 mm sideways; only the
+        # magnitude carries between the two frames.
         g = IsaacGripper.new(
-            config(offset=[0.0, 0.0, 0.02], geometry={"radius_mm": 10, "length_mm": 80}), {}
+            config(offset=[0.12, 0.0, 0.0], geometry={"radius_mm": 10}), {}
         )
         geom = asyncio.run(g.get_geometries())[0]
         assert geom.capsule.radius_mm == 10
-        # centre sits half a cup beyond the offset, along the tool axis
-        assert geom.center.z == pytest.approx(20.0 + 40.0)
+        assert geom.capsule.length_mm == pytest.approx(120.0)
+        assert geom.center.x == 0.0 and geom.center.y == 0.0, \
+            "the cup must lie on the viam tool axis, not on the parent frame's +x"
+        assert geom.center.z == pytest.approx(60.0)
     finally:
         manager._handles.pop("suction", None)
         manager.cfg, manager.mock = previous_cfg, previous_mock

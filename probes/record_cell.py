@@ -73,10 +73,12 @@ class Recorder:
                 await asyncio.sleep(0.1)
                 continue
             self._stamp(frame.convert("RGB"))
-            # No sleep: each frame already costs a render and a round trip, so pacing
-            # would only make the take sparser. The encode uses the rate actually
-            # achieved, so the video plays at real time instead of looking sped up.
-            await asyncio.sleep(0)
+            # Pace the capture. Rendering happens on the sim thread, so pulling frames
+            # flat out competes with stepping physics - and it showed: a pick that the
+            # reliability probe lands 5/5 dropped the carton every time it was filmed.
+            # The encode still uses the rate actually achieved, so the video plays at
+            # real time rather than looking sped up.
+            await asyncio.sleep(1.0 / FPS)
 
     def _stamp(self, frame):
         elapsed = time.perf_counter() - self._t0

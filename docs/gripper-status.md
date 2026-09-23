@@ -39,6 +39,27 @@ not treat it as somewhere suction can act.
 The last two came from reading DTCurrie/viam-isaac-sim, whose vacuum implementation had
 both. Credit there; the diagnosis of the first three was ours.
 
+## Open: reliable when measured, unreliable when filmed
+
+`probes/grasp_reliability.py` picks the carton five times out of five, and the gripper's
+claim agrees with the simulator every time - including through a lateral carry, which is
+where a suction cup actually lets go. So the mechanism works and `is_holding_something` is
+not lying on its own account.
+
+`probes/record_cell.py` runs the same sequence and drops the carton every time.
+
+Ruled out so far: **capture rate**. The frame grabber originally pulled flat out, which
+competes with stepping physics on the sim thread; pacing it to 12 fps changed nothing.
+
+Still to try, cheapest first: film the reliability probe itself rather than the recorder's
+sequence, to find which of the two differs; check whether the retreat of the idle arm
+before the pick perturbs the part; and log the gripper's status and the part pose *during*
+the recorded run rather than inferring both from frames afterwards.
+
+The important part is that this is a difference between two of our own scripts, not
+evidence against the gripper. A round that picks and carries is measurably fine; something
+about the filmed sequence is not.
+
 ## Still worth taking from that fork
 
 Cup compliance. They model the bellows as a soft limit on the forward axis rather than a
