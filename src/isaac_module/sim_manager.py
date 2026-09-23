@@ -509,14 +509,25 @@ class SimManager:
             kwargs["orientation"] = list(orientation)
         art = self._isaac.SingleArticulation(**kwargs)
         self.world.scene.add(art)
-        self.world.reset()
 
-        # SingleArticulation's position/orientation kwargs are not enough on their own:
-        # measured on isaac 6.1, an arm constructed with them came up at the origin with
-        # identity rotation regardless, so a second arm silently stacked on the first and
-        # the base rotation above was discarded. Props and cameras in this file already
-        # place themselves with an explicit set_world_pose; the arm has to as well.
-        # Harmless if a future isaac honours the kwargs - this just sets the same pose.
+        # Placing the arm takes both calls, and the order matters.
+        #
+        # The position/orientation kwargs above are not enough on their own: measured on
+        # isaac 6.1, an arm constructed with them came up at the origin, unrotated, so
+        # the base rotation was discarded and a second arm silently stacked on the first.
+        #
+        # set_world_pose alone is not enough either, because it sets the *current* pose
+        # while world.reset() restores the *default* one - and this method resets on
+        # every arm creation, so building arm-b then arm-a left arm-a back at the origin
+        # while arm-b, whose pose had been baked in by the later reset, looked fine. That
+        # asymmetry is what the end-to-end check caught: one arm correct, one mirrored.
+        #
+        # So: make the intended pose the default first, let reset() apply it, then set it
+        # outright as well for isaac builds where the default state is not honoured.
+        default_state = getattr(art, "set_default_state", None)
+        if default_state is not None:
+            default_state(position=list(position), orientation=list(orientation))
+        self.world.reset()
         art.set_world_pose(position=list(position), orientation=list(orientation))
 
         ee = None

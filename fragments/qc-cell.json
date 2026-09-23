@@ -100,7 +100,7 @@
         "world": "sim-world",
         "asset": "ur5e",
         "position": [0.0, -0.38, 0.3914],
-        "end_effector_prim": "/World/arm_a/flange"
+        "end_effector_prim": "/World/arm_a/wrist_3_link/flange"
       }
     },
     {
@@ -116,7 +116,7 @@
         "world": "sim-world",
         "asset": "ur5e",
         "position": [0.0, 0.38, 0.3914],
-        "end_effector_prim": "/World/arm_b/flange"
+        "end_effector_prim": "/World/arm_b/wrist_3_link/flange"
       }
     },
     {
