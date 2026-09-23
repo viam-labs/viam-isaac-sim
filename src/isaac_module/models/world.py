@@ -17,6 +17,11 @@ Attributes:
   physics_dt / rendering_dt (float) - sim step sizes, default 1/60
   boot_timeout_sec (float)          - how long to wait for kit to boot
   kit_log_level (string)            - kit console verbosity, default "warning"
+DoCommand "prop_poses" returns where each prop actually is now - {position_mm,
+orientation_wxyz, live} per name, optionally filtered by a "names" list. Config says where
+a prop was spawned; this says where it is, which is what lets a vision service be scored
+against ground truth rather than against itself.
+
 DoCommand "obstacles" returns every cube prop as {label, fixed, center_mm, dims_mm},
 ready to become viam Geometry obstacles. The motion service cannot see props on its own -
 they live in isaac, not in the frame system - so callers must pass these in `world_state`
@@ -121,6 +126,10 @@ class IsaacWorld(Generic, EasyResource):
             return {"ok": True}
         if cmd == "obstacles":
             return {"obstacles": sim.prop_obstacles()}
+        if cmd == "prop_poses":
+            names = command.get("names")
+            names = [str(n) for n in names] if names else None
+            return {"props": sim.prop_poses(names)}
         if cmd == "add_usd":
             usd_path = str(command.get("usd_path", ""))
             prim_path = str(command.get("prim_path", ""))
@@ -133,5 +142,5 @@ class IsaacWorld(Generic, EasyResource):
             return {"ok": True}
         raise ValueError(
             f"unknown command {cmd!r}; supported: status, play, pause, reset, "
-            f"obstacles, add_usd"
+            f"obstacles, prop_poses, add_usd"
         )

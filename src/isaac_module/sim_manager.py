@@ -452,6 +452,60 @@ class SimManager:
             })
         return out
 
+    def prop_poses(self, names: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
+        """Where every prop actually is right now, as the sim sees it.
+
+        Config says where a prop was *spawned*; this says where it *is*. Those differ the
+        moment anything moves - a dynamic prop settles under gravity, slides, or gets
+        carried by an arm - so anything reasoning about the current scene has to ask
+        rather than read the config back.
+
+        This is what lets a vision service be checked against ground truth instead of
+        against itself: the part's true pose comes from the simulator, and a detector's
+        answer can be scored against it without a human labelling frames.
+
+        Positions are millimetres, to match viam's geometry and pose messages.
+        Orientation is the prim's (w,x,y,z) quaternion.
+        """
+        self._require_booted()
+        wanted = set(names) if names else None
+        cfg = self.cfg
+        configured = {str(p.get("name")): p for p in (cfg.props if cfg else [])}
+        chosen = [n for n in configured if wanted is None or n in wanted]
+
+        if self.mock:
+            # No stage to read, so report where the prop was put. Honest for a scene
+            # where nothing moves, and it keeps callers working without isaac.
+            return {
+                name: {
+                    "position_mm": [float(v) * 1000.0
+                                    for v in (configured[name].get("position")
+                                              or (0.0, 0.0, 0.0))],
+                    "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+                    "live": False,
+                }
+                for name in chosen
+            }
+
+        def _read() -> Dict[str, Dict[str, Any]]:
+            out: Dict[str, Dict[str, Any]] = {}
+            for name in chosen:
+                prim_path = f"/World/{_prim_name(name)}"
+                try:
+                    position, quat = self._isaac.SingleXFormPrim(
+                        prim_path).get_world_pose()
+                except Exception:
+                    LOGGER.exception("could not read pose of prop %s", name)
+                    continue
+                out[name] = {
+                    "position_mm": [float(v) * 1000.0 for v in position],
+                    "orientation_wxyz": [float(v) for v in quat],
+                    "live": True,
+                }
+            return out
+
+        return self.run(_read)
+
     def status(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
             "booted": self._booted.is_set(),

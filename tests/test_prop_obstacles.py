@@ -109,3 +109,26 @@ def test_usd_props_are_skipped():
         assert labels == ["ground", "block"]
     finally:
         manager.cfg = previous
+
+
+def test_prop_poses_reports_configured_positions_in_mock():
+    """Without a stage there is nothing to read, so mock reports where props were put.
+
+    It is flagged `live: False` so a caller can tell a spawn position from a measured
+    one - the difference matters the moment anything moves.
+    """
+    manager = SimManager.get()
+    previous_cfg, previous_mock = manager.cfg, manager.mock
+    manager.cfg = SimConfig(props=[
+        {"name": "part", "type": "cube", "size": 0.08, "position": [0.5, -0.4, 0.66]},
+    ])
+    manager.mock = True
+    manager._booted.set()
+    try:
+        poses = manager.prop_poses()
+        assert poses["part"]["position_mm"] == pytest.approx([500.0, -400.0, 660.0])
+        assert poses["part"]["live"] is False
+        assert manager.prop_poses(["nothing"]) == {}
+    finally:
+        manager.cfg, manager.mock = previous_cfg, previous_mock
+        manager._booted.clear()

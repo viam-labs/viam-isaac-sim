@@ -140,9 +140,11 @@ Four gaps, all generic, all upstreamable:
    **Do not build this yet** — Abe says Devin has looked at it and may have code. Ask at
    the 10-minute sync. Phase 1 does not need it: arms moving to poses validates layout,
    frames and planning with no grasp at all.
-2. **Runtime prop management** — world `DoCommand` supports only
-   `status, play, pause, reset, add_usd`. The round loop needs `spawn_prop`,
-   `remove_prop`, and `prop_pose` (the last also feeds the oracle).
+2. **Runtime prop management** — partly done. `prop_poses` now reports where each prop
+   actually is, which is what the oracle needs: config says where a prop was spawned,
+   this says where it is, so a vision service can be scored against ground truth instead
+   of against itself. `spawn_prop` and `remove_prop` are still missing, and they are what
+   the per-round part lifecycle needs.
 3. **Composite props** — see below.
 4. **Conveyor** — Isaac ships a conveyor utility
    (`ext_isaacsim_asset_gen_conveyor`); Abe suggests exposing it via `props`. Phase 1 can
@@ -389,7 +391,8 @@ Ordered by what breaks worst. Items 1 and 2 gate phase 1.
    `DoCommand reset`, which snaps every prop and both arms back to spawn state.
 6. **Composite `children` must carry neither `RigidBodyAPI` nor `CollisionAPI`.** A
    colliding mark on the bottom face would tilt a resting part by its own thickness.
-7. **`qc:oracle` needs more than `prop_pose`.** The module exposes no camera intrinsics,
+7. **`qc:oracle` still needs camera intrinsics.** `prop_poses` covers ground-truth pose;
+   what remains is projecting it into image space. The module exposes no intrinsics,
    and the fragment's camera frame has translation but no orientation while Isaac aims it
    via `target` — so the oracle cannot currently project ground truth into image space.
 8. **Name the dependency rather than claim it was avoided.** The course module needs
