@@ -261,22 +261,29 @@ instantiated. Pinned to 0.80.0; implementing those methods is what lifts the pin
 reach is reached, and both trays are refused from arm-a with `too far`. That is the
 handoff constraint proven by the same solver the course will run.
 
-**Planning latency is NOT settled, and an earlier claim here was wrong.** A first pass
-reported 3–5 ms and concluded planning was free. That was an artifact: `motion.Move()`
-plans *and executes*, blocking until the arm arrives, and repeating a move the arm has
-already made returns in ~5 ms having done nothing. Taking a median over five repeats hid
-the single real move behind four no-ops. Measured properly, a first move to a new pose
-takes **0.9 s median, 8.2 s worst** — squarely in the range that would add ~100 s to a
-round, which is the risk this phase existed to rule out and has not.
+**Planning latency: settled, and it is cheap.** `motion.Move()` plans *and* executes and
+only returns once the arm has arrived, and the SDK has no plan-only call, so the two could
+not be told apart. Running the move as a concurrent task and polling the joints makes the
+split observable: the instant they first budge is the boundary.
 
-That figure is still not planning time: it is plan + simulated execution, and the mock arm
-drives every joint at 1 rad/s. The SDK has no plan-only call (`get_plan` only retrieves a
-plan already in flight), so the split has to come from Isaac in phase 1, timed against the
-real articulation. Two things make the mock number optimistic in the other direction, too:
-`world_state` was empty, so the planner never had to avoid anything, and RDK's fast path is
-a straight-line attempt that only falls back to sampling once the trays, belt, tool and
-held part are in the world. **Re-measure with the real obstacle set before trusting any
-round budget.**
+Measured against the real obstacle set, with scenery and both tools declared:
+
+| | median | max |
+|---|---|---|
+| planning | 150 ms | 175 ms |
+| execution | 143 ms | 850 ms |
+
+437 ms per move, so a 50-move round is about **22 s of arm time** — not the ~100 s that
+was the risk this phase existed to rule out. Planning is the smaller half and barely
+varies.
+
+An earlier note here claimed 3-5 ms and concluded planning was free; that was an artifact
+of repeating a move the arm had already made, which returns immediately having done
+nothing. `probes/latency_check.py` reports moves that produced no motion separately for
+exactly that reason. It also commands one fixed tool orientation, so the four
+side-presenting stations collapse onto one flange pose and read as no-ops — real
+presenting rotates the part, so execution will be higher than this table. Planning will
+not be.
 
 **Phase 1 — layout, no gripper.** Scaled ur5e layout; re-run the reach check (all
 stations < 0.85 m, both bins > 0.85 m from arm A); arms move to every station under the
