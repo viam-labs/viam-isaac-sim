@@ -319,6 +319,52 @@ config here and the mistake is easy to repeat — but spend no renders on the fi
 props-built scene invalidates it; phase 1 validates with the oracle and the retrain waits
 for a settled scene.
 
+## Open findings from review
+
+Ordered by what breaks worst. Items 1 and 2 gate phase 1.
+
+1. **Base-frame yaw between the SVA and the Isaac USD.** The Viam SVA is rooted in the UR
+   controller's `base` frame; Isaac's UR USDs are URDF imports rooted in ROS `base_link`,
+   and the two differ by a rotation about Z. If they disagree, every planned x/y is
+   mirrored relative to the simulation and nothing downstream works. A frame `orientation`
+   cannot correct it, because `apply_frame_to_attrs` folds the same quaternion into the
+   Isaac spawn — it would need a per-asset spawn offset in the module. **Mock cannot
+   detect this** (the mock arm ignores `position` and returns a constant end pose), so it
+   is the first thing phase 1 does: set `end_effector_prim` (the fragment omits it, so
+   `GetEndPosition` currently raises), command all-zero joints, and compare Isaac's
+   end-effector world pose against `motion.GetPose`.
+2. **The planner is blind to the scenery and to both tools.** "Plans around obstacles"
+   currently means "plans around the other arm's capsules". Props exist in Isaac only and
+   are absent from the frame system, and the 0.12 m tool appears in neither the SVA nor
+   `get_geometries` — so the offset this plan spends a page on for reach is invisible to
+   the planner. Add a tool frame as a frame-config child of each arm (carrying a capsule),
+   and pass belt and trays as `world_state` obstacles on every call.
+3. **Do not port `ee_pose()`.** It assumes the URDF `ee_link` convention (+x out of the
+   flange); in `ur5e.json` the last link is a −99.6 mm translation along y, so the flange
+   normal is −y and a ported `ee_pose` would command the wrist 90° off. The tool frame in
+   item 2 replaces it: `Move` the tool frame to `tool_pose()` directly.
+4. **Execution does not track the plan.** `move_through_joint_positions` sets joint targets
+   and lets the articulation drive there at its own gains, unsynchronized, so the path
+   between coarse waypoints bows off the segment the planner checked; `MoveOptions` are
+   ignored; and a waypoint that times out is **skipped with a warning**, after which the
+   arm cuts to the next one from wherever it is — off the checked path entirely. This is
+   the strongest argument for keeping the independent probe and the video, stronger than
+   distrust of the planner itself. Failing the move on an intermediate timeout is the fix.
+5. **Runtime prop management is what buys fast iteration, not mock.** Props spawn only at
+   boot and handles are cached across reconfigure, so every belt or tray tweak in phase 1
+   is a full Isaac restart. Build `spawn_prop` / `remove_prop` before iterating on layout.
+   Neither may call `reset()` — the module already resets on every arm creation and on
+   `DoCommand reset`, which snaps every prop and both arms back to spawn state.
+6. **Composite `children` must carry neither `RigidBodyAPI` nor `CollisionAPI`.** A
+   colliding mark on the bottom face would tilt a resting part by its own thickness.
+7. **`qc:oracle` needs more than `prop_pose`.** The module exposes no camera intrinsics,
+   and the fragment's camera frame has translation but no orientation while Isaac aims it
+   via `target` — so the oracle cannot currently project ground truth into image space.
+8. **Name the dependency rather than claim it was avoided.** The course module needs
+   `spawn_prop`, `prop_pose`, the gripper, the tool frame and intrinsics — all of which
+   live in this fork, pinned as a local path. That is fine for an instructor machine, but
+   it is a coupling, and gaps 2–4 above are not yet assigned to a phase.
+
 ## Risks
 
 | risk | mitigation |
