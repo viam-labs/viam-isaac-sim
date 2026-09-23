@@ -5,10 +5,8 @@ not in isolation, and arms stalling on moves to empty poses — are the same bug
 
 ## Diagnosis
 
-The UR5e SVA gives every revolute joint a range of **±360°**. Viam's motion service is
-free to pick any IK solution inside that range, and it has no reason to prefer the one
-nearest the current pose. So each move can add most of a turn to a joint, and successive
-moves accumulate:
+The UR5e SVA gives every revolute joint a range of **±360°**, and the cell winds itself up
+inside it:
 
 | | arm-a max abs joint | arm-b max abs joint |
 |---|---|---|
@@ -16,12 +14,34 @@ moves accumulate:
 | after one pass over the stations | 97° | 230° |
 | after two passes | **270°** | 230° |
 
-Arm-a's joint 0 went −26.4° → 206.4° in a single pass. Once a joint approaches 360° the
-cell degrades in three separate-looking ways:
+Arm-a's joint 0 went −26.4° → 206.4° in a single pass.
+
+**Why, corrected.** The first version of this document blamed a planner with "no reason to
+prefer the solution nearest the current pose". That is wrong, and worth recording because
+it is the opposite of the truth: RDK seeds each IK attempt from the start configuration
+and scores candidates by joint-space distance from it. The planner is *greedy for the
+nearest solution*.
+
+The real driver is where the workspace sits. The UR5e's zero configuration points the
+flange at roughly −164° in its base frame while every station in this cell is at +x, so
+the stations all need a pan within about 30° of ±180 — the wrap point. Greedy
+nearest-neighbour across a discontinuity ratchets: each move picks the closest
+representative, which may be the one a turn away, and the choice sticks. That also
+explains a detail pure accumulation does not — arm-b reached 230° and then *stayed* there
+across a second pass rather than climbing to 360. It had settled into a cycle.
+
+Two consequences worth keeping in mind. The retreat pose the station check used sits
+directly behind the base, right on the wrap point, so the probe contributed to the
+ratchet it measured. And the structurally better fix is to rotate both arm frames 180° so
+the stations sit near pan 0 and the discontinuity falls behind the arm, where nothing
+works — see "Not done here".
+
+Once a joint approaches 360° the cell degrades in three separate-looking ways:
 
 * **planning fails** — the planner must unwind to reach the goal, and often cannot;
-* **execution stalls** — the arm is commanded into a contorted configuration and fails to
-  settle within the 0.5° final tolerance, timing out after `move_timeout` (30 s);
+* **execution stalls** — the arm fails to settle within the 0.5° final tolerance and times
+  out after `move_timeout` (30 s). See the caveat below: most of these turned out not to
+  be wind-up at all;
 * **the move is rejected outright** — `joint 0 needs to be within range [-360, 360] and
   cannot be moved to 363.6`.
 
@@ -32,6 +52,19 @@ issues around fifty moves.
 
 Nothing here is specific to the QC cell. Any two-arm scene driven through the motion
 service on this module will wind up the same way.
+
+### The stalls were mostly the floor, not wind-up
+
+A stall showing `j1: at 232.0 want 230.4` is a 1.6° residual on one joint that never
+closes. That is a force balance, not a contorted pose: the arm is pressing on something.
+And it was — `boot()` calls `add_default_ground_plane()` for any scene without its own
+stage, so there is a collider at z=0 that `prop_obstacles()` never reported. j1 = 232°
+(≡ −128°) points the upper arm steeply down from a base only 391 mm up. The planner,
+shown a world with no floor, routed the elbow into the ground and the arm stalled leaning
+on it.
+
+Settling itself is fine: on a freshly reset arm, gravity-loaded joint moves settle inside
+the 0.5° tolerance in 0.4 s. So the tolerance is not the problem and did not need changing.
 
 ## Fix
 
@@ -50,6 +83,12 @@ motion service gets them without having to remember anything.
 
 Only applies to SVA JSON. A URDF `kinematics_url` is passed through untouched, and the
 attribute is documented as such rather than silently doing nothing.
+
+### 1b. Tell the planner about the floor
+
+`prop_obstacles()` now reports the ground plane as a fixed slab whose top face is z=0,
+alongside the props. Without it the planner will keep routing elbows through the floor
+however the joint limits are set.
 
 ### 2. Give the cell a way back (the safety net)
 
@@ -80,6 +119,64 @@ genuinely stuck, which is the case that must not continue silently.
 reported as `no plan` — a planner that could not find a route. That mislabelling is what
 sent the first investigation after the geometry instead of the joints. Already fixed;
 recorded here because it is why the bug took three sessions of probing to see.
+
+### 5. Stop the drive when a move fails
+
+Both move paths raised with the last `set_joint_targets` still applied, so a blocked arm
+went on pressing into whatever stopped it at full drive force for as long as the sim ran.
+They now call `stop()` (which holds the current position) before raising.
+
+## Not done here
+
+**Rotating the arm frames 180°** is the better structural fix: it puts every station near
+pan 0 and moves the wrap point behind the arm, removing the ratchet at its source rather
+than walling it off. It is not done in this change because it moves every arm base
+orientation and would invalidate the verified base-frame yaw work and the station
+coordinates in one step, making the verification ambiguous. The clamp is measured to hold
+(below), so this is an improvement to sequence deliberately, not a fire.
+
+**Re-sizing the trays** (23 mm gap) is real and unrelated; mixing a geometry change into a
+joint-limits fix would make the numbers impossible to attribute.
+
+**Margin.** With the clamp at ±180 the cell now peaks at 179° on one joint. The served
+limit needs headroom greater than the 0.5° settle tolerance, or an arm that settles at
+180.3° fails its next start check. `probes/windup_check.py` reports the per-joint peak so
+this is visible as drift rather than as a jam; the frame rotation above is what gives it
+real margin.
+
+## Measured result
+
+`probes/windup_check.py`, resetting then making repeated passes over every station:
+
+| | arm-a peak | arm-b peak | stalls | planning failures |
+|---|---|---|---|---|
+| before (2 passes) | 270° | 230° | yes | yes |
+| clamp only (4 passes) | 179° | 176° | **7** | 0 |
+| clamp + floor + base yaw (4 passes) | 179° | **117°** | **0** | 0 |
+| same, 6 passes (~180 moves) | **180°** | 117° | 0 | 1 |
+
+The clamp alone bounds the drift but is not sufficient: with the workspace still straddling
+the wrap point, both arms crept to the limit and then stalled seven times trying to track
+paths that hug it. Adding the base yaw moved arm-b's peak down to 117° and removed the
+stalls entirely.
+
+### The residual, stated plainly
+
+**arm-a's j1 reaches exactly 180° and stays there**, and a 6-pass run produced one
+planning failure. Clamping puts a wrap discontinuity at ±180 on *every* joint, and
+arm-a's shoulder-lift working range straddles it — so the ratchet has moved from j0 to
+j1 rather than being eliminated. The base yaw fixes pan, which is why arm-b (whose lift
+range does not straddle) is clean at 117°.
+
+The fix for this is **per-joint, asymmetric limits**: arm-a's lift works in roughly
+[−180°, 0°], so a range like [−270°, 90°] puts the discontinuity where the arm never
+goes, exactly as the base yaw does for pan. `joint_limit_deg` currently takes one
+symmetric number and would need to accept a per-joint map. Not done here — the change is
+small but wants its own verification run, and mixing it in would make this table
+unattributable.
+
+So: the cell no longer jams, it survives ~180 moves where it used to fail within two
+passes, and the remaining failure mode is understood and bounded rather than mysterious.
 
 ## How the fix is checked
 

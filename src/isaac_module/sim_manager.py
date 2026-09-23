@@ -389,6 +389,21 @@ class SimManager:
         if cfg is None:
             return []
         out: List[Dict[str, Any]] = []
+
+        # The floor counts. boot() calls add_default_ground_plane() for any scene without
+        # its own usd_stage, so there is a collider at z=0 that the planner knows nothing
+        # about - and an arm on a pedestal has plenty of configurations that reach below
+        # its own base. Left unreported, the planner routes an elbow into the ground and
+        # the arm stalls pressing against it, which reads as a mysterious failure to
+        # settle rather than as a collision.
+        if not cfg.usd_stage:
+            out.append({
+                "label": "ground",
+                "fixed": True,
+                "center_mm": [0.0, 0.0, -50.0],
+                "dims_mm": [20000.0, 20000.0, 100.0],
+            })
+
         for prop in cfg.props:
             if str(prop.get("type", "cube")) != "cube":
                 # A usd prop's extent is whatever the asset says; the module does not

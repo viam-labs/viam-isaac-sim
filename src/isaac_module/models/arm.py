@@ -16,6 +16,18 @@ Attributes:
                                spawn. Set this only for a USD you have already authored
                                in the kinematics frame.
   move_timeout_sec (float)   - max time to wait for a move (default 30)
+  joint_limit_deg (float)    - NOTE: if an arm is already outside the narrowed range
+                               when this is turned on, every motion.Move fails its start
+                               check until the arm is driven back in bounds with
+                               move_to_joint_positions, which is allowed to head inwards.
+                               narrow every revolute joint's range in the kinematics
+                               served to the motion service to +-this many degrees.
+                               UR arms allow +-360, and the planner will happily pick
+                               multi-turn solutions that accumulate until the arm jams;
+                               180 covers every orientation and prevents that. SVA only
+                               (a urdf is passed through), and it guards the planner,
+                               not isaac - a direct move_to_joint_positions can still
+                               wind a joint up.
   kinematics_url (string)    - where to fetch the kinematics file served by
                                GetKinematics (.json = SVA, .urdf = URDF;
                                file:// URLs work). Known assets with official
@@ -25,6 +37,7 @@ Attributes:
 
 import asyncio
 import hashlib
+import json
 import math
 import os
 import tempfile
@@ -121,6 +134,10 @@ class IsaacArm(Arm, EasyResource):
             ):
                 return
             await asyncio.sleep(0.05)
+        # Stop before raising. The last set_joint_targets stays applied otherwise, so a
+        # blocked arm goes on pressing into whatever stopped it - the ground, the belt,
+        # the other arm - at full drive force for as long as the sim runs.
+        await asyncio.to_thread(handle.stop)
         raise TimeoutError(
             f"arm {self.name} did not reach target within {self._move_timeout}s"
         )
@@ -154,14 +171,23 @@ class IsaacArm(Arm, EasyResource):
                     for j, (c, t) in enumerate(zip(current, targets))
                     if abs(c - t) > tolerance
                 )
-                if last:
-                    raise TimeoutError(
-                        f"arm {self.name} stalled at waypoint {i + 1}/{len(waypoints)} "
-                        f"(stuck joints: {detail})"
-                    )
-                self.logger.warning(
-                    "%s: waypoint %d/%d not reached, continuing (%s)",
-                    self.name, i + 1, len(waypoints), detail,
+                # A missed waypoint fails the move, intermediate ones included.
+                #
+                # This used to log a warning and drive on to the next waypoint from
+                # wherever the arm had actually got to - which is off the trajectory the
+                # motion service collision-checked, through a cell it cleared for a
+                # different path. That is precisely the unchecked motion this module
+                # exists to avoid, and it happened silently.
+                #
+                # Intermediate waypoints keep the loose 2 degree tolerance, so this only
+                # fires when the arm is genuinely stuck rather than merely flowing through
+                # a corner, and the message names the waypoint and the offending joints so
+                # the failure can be diagnosed instead of just retried.
+                await asyncio.to_thread(handle.stop)
+                raise TimeoutError(
+                    f"arm {self.name} stalled at waypoint {i + 1}/{len(waypoints)} "
+                    f"({'final' if last else 'intermediate'}, tolerance "
+                    f"{math.degrees(tolerance):.1f} deg; stuck joints: {detail})"
                 )
 
     async def get_joint_positions(self, **kwargs) -> JointPositions:
@@ -219,9 +245,65 @@ class IsaacArm(Arm, EasyResource):
             pass  # caching is best-effort
         return fmt, data
 
+    def _clamp_joint_limits(
+        self, fmt: KinematicsFileFormat.ValueType, data: bytes
+    ) -> bytes:
+        """Narrow the joint ranges the motion service is told about.
+
+        The UR SVA allows every revolute joint +-360 degrees, which is true of the real
+        robot. Viam's planner may pick any solution inside that range and has no reason to
+        prefer the one nearest the arm's current pose, so a two-arm cell winds itself up:
+        measured over one pass of this cell's stations, a joint went from -26 to 206
+        degrees, and after a second pass an arm sat at 270. Approaching 360 the cell fails
+        three different-looking ways - the planner cannot find a route, the arm cannot
+        settle and times out, or the move is rejected as out of range - which is why the
+        symptom looked intermittent.
+
+        Clamping costs no reachable pose: +-180 degrees of a revolute joint already covers
+        every orientation. Surveyed across this cell's stations the solutions needed at
+        most [162, 174, 104, 157, 90] degrees on the first five joints, and 302 on wrist_3
+        - which is the wind-up itself, 302 being the same place as -58.
+
+        This is a guard on what the PLANNER believes, not something isaac enforces:
+        set_joint_targets will still drive a joint anywhere it is told, so a direct
+        move_to_joint_positions can still wind up. Sending the arms to a known
+        configuration between rounds is what covers that path.
+
+        Only SVA json is rewritten. A urdf is passed through untouched.
+        """
+        limit = self._attrs.get("joint_limit_deg")
+        if limit is None:
+            return data
+        limit = abs(float(limit))
+        if fmt != KinematicsFileFormat.KINEMATICS_FILE_FORMAT_SVA:
+            self.logger.warning(
+                "%s: joint_limit_deg is only applied to SVA kinematics; "
+                "this arm serves a urdf, so the limit is being ignored", self.name,
+            )
+            return data
+
+        model = json.loads(data)
+        narrowed = []
+        for joint in model.get("joints", []):
+            if joint.get("type") != "revolute":
+                continue
+            before = (joint.get("min"), joint.get("max"))
+            joint["min"] = max(float(joint.get("min", -limit)), -limit)
+            joint["max"] = min(float(joint.get("max", limit)), limit)
+            if (joint["min"], joint["max"]) != before:
+                narrowed.append(f"{joint.get('id')} {before} -> "
+                                f"({joint['min']}, {joint['max']})")
+        if narrowed:
+            self.logger.info("%s: narrowed joint limits to +-%g deg: %s",
+                             self.name, limit, "; ".join(narrowed))
+        return json.dumps(model).encode()
+
     async def get_kinematics(self, **kwargs) -> Tuple[KinematicsFileFormat.ValueType, bytes]:
         if self._kinematics is None:
-            self._kinematics = await asyncio.to_thread(self._load_kinematics)
+            fmt, data = await asyncio.to_thread(self._load_kinematics)
+            # Clamp here rather than in _load_kinematics: that caches the fetched file on
+            # disk, and the cache must hold what upstream served, not this arm's config.
+            self._kinematics = (fmt, self._clamp_joint_limits(fmt, data))
         return self._kinematics
 
     async def get_geometries(self, **kwargs) -> List[Geometry]:

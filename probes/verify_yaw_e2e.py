@@ -21,6 +21,7 @@ import os
 import sys
 
 from viam.components.arm import Arm
+from viam.components.generic import Generic
 from viam.robot.client import RobotClient
 from viam.services.motion import MotionClient
 
@@ -32,6 +33,17 @@ ARMS = ("arm-a", "arm-b")
 # NOT at the same place as each other, which is what a dropped spawn pose would produce.
 SVA_ZERO_MM = (-817.2, -232.9, 62.8)
 ARM_BASE_MM = {"arm-a": (0.0, -380.0, 391.4), "arm-b": (0.0, 380.0, 391.4)}
+# Both arms carry a 180 deg base yaw so their workspace does not straddle the pan wrap
+# point. Read it from the fragment rather than restating it: the expected flange position
+# rotates with the base, and a probe that hardcodes one orientation silently checks the
+# wrong thing the moment the config changes.
+def _base_yaw_deg(name):
+    import json
+    from pathlib import Path as _P
+    cfg = json.loads((_P(__file__).resolve().parents[1] / "fragments" / "qc-cell.json").read_text())
+    comp = next(c for c in cfg["components"] if c["name"] == name)
+    o = comp.get("frame", {}).get("orientation")
+    return float(o["value"]["th"]) if o else 0.0
 TOLERANCE_MM = 25.0
 
 
@@ -47,14 +59,17 @@ async def main():
         motion = MotionClient.from_robot(robot, "builtin")
         print(f"resources: {sorted({r.name for r in robot.resource_names})}\n")
 
+        # Zero the joints with a sim reset, not a joint command: move_to_joint_positions
+        # is an unchecked joint-space sweep through the cell, and from an arbitrary start
+        # it drives the arm through the floor or the belt on the way. reset teleports.
+        await Generic.from_robot(robot, "sim-world").do_command({"command": "reset"})
+        await asyncio.sleep(3.0)
+
         for name in ARMS:
             arm = Arm.from_robot(robot, name)
-            await arm.move_to_joint_positions(
-                __import__("viam.components.arm", fromlist=["JointPositions"])
-                .JointPositions(values=[0.0] * 6)
-            )
-            await asyncio.sleep(2.0)
 
+            joints = list((await arm.get_joint_positions()).values)
+            at_zero = max(abs(v) for v in joints) < 1.0
             isaac = await arm.get_end_position()
             frame = await motion.get_pose(component_name=name, destination_frame="world")
             f = frame.pose
@@ -62,12 +77,24 @@ async def main():
             print(f"  isaac flange (module)   ({isaac.x:8.1f}, {isaac.y:8.1f}, {isaac.z:7.1f})")
             print(f"  frame system (motion)   ({f.x:8.1f}, {f.y:8.1f}, {f.z:7.1f})")
             base = ARM_BASE_MM[name]
-            want = tuple(base[i] + SVA_ZERO_MM[i] for i in range(3))
+            yaw = math.radians(_base_yaw_deg(name))
+            c, s_ = math.cos(yaw), math.sin(yaw)
+            rx = SVA_ZERO_MM[0] * c - SVA_ZERO_MM[1] * s_
+            ry = SVA_ZERO_MM[0] * s_ + SVA_ZERO_MM[1] * c
+            want = (base[0] + rx, base[1] + ry, base[2] + SVA_ZERO_MM[2])
             print(f"  expected in world       ({want[0]:8.1f}, {want[1]:8.1f}, {want[2]:7.1f})")
             off = math.dist((isaac.x, isaac.y, isaac.z), want)
-            print(f"  isaac vs expected:      {off:.1f} mm")
-            if off > TOLERANCE_MM:
-                failures.append(f"{name}: isaac flange {off:.1f} mm from the SVA pose")
+            print(f"  joints                  {[round(v, 1) for v in joints]}")
+            # The SVA-pose comparison is only meaningful at zero joints. reset() restores
+            # the articulation's default state, which is not guaranteed to be all-zero,
+            # so check rather than assume - otherwise a drooping arm reads as a frame bug.
+            if at_zero:
+                print(f"  isaac vs expected:      {off:.1f} mm")
+                if off > TOLERANCE_MM:
+                    failures.append(f"{name}: isaac flange {off:.1f} mm from the SVA pose")
+            else:
+                print(f"  (not at zero joints, so the SVA-pose check is skipped; "
+                      f"isaac vs frame system below is the real invariant)")
 
             gap = math.dist((isaac.x, isaac.y, isaac.z), (f.x, f.y, f.z))
             mirrored = math.dist((-isaac.x, -isaac.y, isaac.z), (f.x, f.y, f.z))

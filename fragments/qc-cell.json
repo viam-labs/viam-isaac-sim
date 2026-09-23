@@ -32,6 +32,20 @@
     "end_effector_prim is what GetEndPosition reports; without it the call raises. The",
     "flange prim is also the one the yaw check compares against motion.GetPose.",
     "",
+    "The 180 deg base yaw on each arm is load-bearing. A ur5e's zero configuration",
+    "points its flange at about -164 deg in its own base frame, and every station in this",
+    "cell is at +x, so unrotated the stations all need a pan within ~30 deg of the +-180",
+    "wrap point. RDK seeds IK from the current configuration and scores by joint-space",
+    "distance, so a workspace straddling the wrap ratchets: each move takes the nearest",
+    "representative and the choice sticks. Facing the arms at the cell puts the stations",
+    "near pan 0 and the discontinuity behind the arm, where nothing works.",
+    "",
+    "joint_limit_deg is load-bearing, not tuning. The ur5e SVA allows every revolute",
+    "joint +-360 deg and the planner picks any solution in that range, so the cell winds",
+    "itself up: measured over one pass of the stations a joint went from -26 to 206 deg,",
+    "and after two passes an arm sat at 270. Near 360 it jams. 180 covers every",
+    "orientation, and the solutions these stations need peak at 174 deg.",
+    "",
     "The belt is derived from CONVEYOR_CENTER/CONVEYOR_SIZE, not eyeballed: it runs along",
     "y (0.258 x 0.836), which an earlier draft had transposed to run along x and centred",
     "on the pick slot instead of the belt. The trays are still provisional.",
@@ -94,11 +108,16 @@
       "model": "erh:isaac-sim:arm",
       "frame": {
         "parent": "world",
-        "translation": { "x": 0, "y": -380, "z": 391.4 }
+        "translation": { "x": 0, "y": -380, "z": 391.4 },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": { "x": 0, "y": 0, "z": 1, "th": 180 }
+        }
       },
       "attributes": {
         "world": "sim-world",
         "asset": "ur5e",
+        "joint_limit_deg": 180,
         "position": [0.0, -0.38, 0.3914],
         "end_effector_prim": "/World/arm_a/wrist_3_link/flange"
       }
@@ -110,11 +129,16 @@
       "model": "erh:isaac-sim:arm",
       "frame": {
         "parent": "world",
-        "translation": { "x": 0, "y": 380, "z": 391.4 }
+        "translation": { "x": 0, "y": 380, "z": 391.4 },
+        "orientation": {
+          "type": "ov_degrees",
+          "value": { "x": 0, "y": 0, "z": 1, "th": 180 }
+        }
       },
       "attributes": {
         "world": "sim-world",
         "asset": "ur5e",
+        "joint_limit_deg": 180,
         "position": [0.0, 0.38, 0.3914],
         "end_effector_prim": "/World/arm_b/wrist_3_link/flange"
       }

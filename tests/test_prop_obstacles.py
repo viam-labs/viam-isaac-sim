@@ -33,7 +33,22 @@ def obstacles():
 
 
 def test_every_cube_prop_is_reported(obstacles):
-    assert set(obstacles) == {"belt", "good_tray", "bad_tray"}
+    assert {"belt", "good_tray", "bad_tray"} <= set(obstacles)
+
+
+def test_the_floor_is_reported(obstacles):
+    """boot() adds a ground plane for any scene without its own stage.
+
+    It is a collider like any other, and an arm on a pedestal has plenty of
+    configurations that reach below its own base. Unreported, the planner routes an
+    elbow into it and the arm stalls pressing on the floor - which looks like a
+    mysterious failure to settle rather than a collision.
+    """
+    ground = obstacles["ground"]
+    assert ground["fixed"]
+    top = ground["center_mm"][2] + ground["dims_mm"][2] / 2
+    assert top == pytest.approx(0.0), "the floor's top face should be z=0"
+    assert min(ground["dims_mm"][:2]) > 5000, "the floor should span the whole cell"
 
 
 def test_dimensions_are_full_extents_in_mm(obstacles):
@@ -59,12 +74,24 @@ def test_fixed_is_carried_through(obstacles):
     assert all(o["fixed"] for o in obstacles.values()), "the cell's scenery is all fixed"
 
 
+def test_a_scene_with_its_own_stage_reports_no_floor():
+    """A usd_stage brings its own floor, if it has one - do not invent a second."""
+    manager = SimManager.get()
+    previous = manager.cfg
+    manager.cfg = SimConfig(usd_stage="/scene.usd", props=[])
+    try:
+        assert manager.prop_obstacles() == []
+    finally:
+        manager.cfg = previous
+
+
 def test_no_props_means_no_obstacles():
     manager = SimManager.get()
     previous = manager.cfg
     manager.cfg = SimConfig(props=[])
     try:
-        assert manager.prop_obstacles() == []
+        # The ground plane is still there - it is part of the scene, not a prop.
+        assert [o["label"] for o in manager.prop_obstacles()] == ["ground"]
     finally:
         manager.cfg = previous
 
@@ -79,6 +106,6 @@ def test_usd_props_are_skipped():
     ])
     try:
         labels = [o["label"] for o in manager.prop_obstacles()]
-        assert labels == ["block"]
+        assert labels == ["ground", "block"]
     finally:
         manager.cfg = previous
