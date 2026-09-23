@@ -87,6 +87,67 @@ KNOWN_ASSETS: Dict[str, Dict[str, Any]] = {
 }
 
 
+GROUND_PLANE_NAME = "ground_plane"
+GROUND_PLANE_PRIM_PATH = "/World/GroundPlane"
+DOME_LIGHT_PRIM_PATH = "/World/DomeLight"
+SPHERE_LIGHT_PRIM_PATH = "/World/defaultLight"
+MATTE_OBJECT_SETTING = "/rtx/matteObject/enabled"
+SHADOW_CATCHER_SETTING = "/rtx/shadowCatcher/enabled"
+VIEWPORT_GRID_SETTING = "/app/viewport/grid/enabled"
+DEFAULT_DOME_INTENSITY = 1000.0
+DEFAULT_DOME_COLOR = (1.0, 1.0, 1.0)
+
+# A floor, not a drawing of one. Isaac's default is a lit grid, which reads as a
+# CAD viewport rather than a room - the thing that made the first cell video look
+# like parts floating over graph paper.
+GROUND_DEFAULTS: Dict[str, Any] = {
+    "kind": "grid",
+    "size": 40.0,
+    "color": (0.28, 0.28, 0.30),
+    "friction": 0.6,
+    "restitution": 0.0,
+    "matte": False,
+}
+
+
+def ground_plan(
+    ground: Optional[Dict[str, Any]], usd_stage: Optional[str]
+) -> Tuple[str, Dict[str, Any]]:
+    """Pure. What `_boot` should author for the floor.
+
+    "skip" when a ground config is set alongside someone's own usd_stage, "grid" for the
+    default, "none" to author nothing, or "plane" with the kwargs add_ground_plane takes.
+    """
+    if usd_stage is not None and ground is not None:
+        return "skip", {"reason": f"usd_stage {usd_stage!r} is set"}
+    if ground is None:
+        return "grid", {}
+    kind = ground.get("kind", GROUND_DEFAULTS["kind"])
+    if kind == "grid":
+        return "grid", {}
+    if kind == "none":
+        return "none", {}
+    friction = float(ground.get("friction", GROUND_DEFAULTS["friction"]))
+    return "plane", {
+        "size": float(ground.get("size", GROUND_DEFAULTS["size"])),
+        "color": [float(v) for v in ground.get("color", GROUND_DEFAULTS["color"])],
+        "static_friction": friction,
+        "dynamic_friction": friction,
+        "restitution": float(ground.get("restitution", GROUND_DEFAULTS["restitution"])),
+    }
+
+
+def ground_is_matte(ground: Optional[Dict[str, Any]]) -> bool:
+    """Pure. A matte floor is invisible to primary rays but still catches shadows.
+
+    Useful for compositing a cell over a backdrop; wrong for a room, where the floor is
+    part of what you are looking at. Off by default for that reason.
+    """
+    if ground is None:
+        return bool(GROUND_DEFAULTS["matte"])
+    return bool(ground.get("matte", GROUND_DEFAULTS["matte"]))
+
+
 @dataclass
 class SimConfig:
     mock: bool = False
@@ -110,6 +171,11 @@ class SimConfig:
     # of lines at info, and viam-server records the module's stderr as
     # error-level logs, so default to warning.
     kit_log_level: str = "warning"
+    # scene presentation. `ground` picks what the floor is, `render` carries the
+    # viewport overlays, `lighting` the dome and key lights.
+    ground: Optional[Dict[str, Any]] = None
+    render: Dict[str, Any] = field(default_factory=dict)
+    lighting: Dict[str, Any] = field(default_factory=dict)
 
 
 class SimManager:
@@ -321,8 +387,9 @@ class SimManager:
             rendering_dt=cfg.rendering_dt,
             stage_units_in_meters=1.0,
         )
-        if not cfg.usd_stage:
-            self.world.scene.add_default_ground_plane()
+        self._add_ground(cfg)
+        self._apply_viewport_grid(bool(cfg.render.get("viewport_grid", True)))
+        self._apply_lighting(cfg.lighting)
         for prop in cfg.props:
             try:
                 self._spawn_prop(prop)
@@ -398,6 +465,103 @@ class SimManager:
         self._require_booted()
         if not self.mock:
             self.run(lambda: self.world.reset())
+
+    def _add_ground(self, cfg: "SimConfig") -> None:
+        """Author whatever floor `ground_plan` decided on, before props spawn."""
+        kind, kwargs = ground_plan(cfg.ground, cfg.usd_stage)
+        if kind == "skip":
+            LOGGER.warning("ground config ignored: %s", kwargs["reason"])
+            return
+        if kind == "none":
+            return
+        if kind == "plane":
+            import numpy as np
+
+            # PreviewSurface calls color.tolist(), so the colour has to be an array
+            kwargs["color"] = np.array(kwargs["color"], dtype=float)
+            try:
+                self.world.scene.add_ground_plane(
+                    name=GROUND_PLANE_NAME,
+                    prim_path=GROUND_PLANE_PRIM_PATH,
+                    z_position=0.0,
+                    **kwargs,
+                )
+                if ground_is_matte(cfg.ground):
+                    self._make_ground_matte()
+            except Exception:
+                LOGGER.exception("could not add the ground plane; falling back to the grid")
+                self.world.scene.add_default_ground_plane()
+            return
+        if not cfg.usd_stage:
+            self.world.scene.add_default_ground_plane()
+
+    def _make_ground_matte(self) -> None:
+        """Flag the plane's prims as RTX matte objects: invisible to primary rays, still
+        catching shadows. Best-effort, so a render-settings change cannot block boot."""
+        try:
+            import carb
+            from pxr import Sdf, Usd, UsdGeom
+
+            stage = self._isaac.omni_usd.get_context().get_stage()
+            root = stage.GetPrimAtPath(GROUND_PLANE_PRIM_PATH)
+            for prim in (list(Usd.PrimRange(root)) if root.IsValid() else []):
+                if prim == root or prim.IsA(UsdGeom.Mesh):
+                    UsdGeom.PrimvarsAPI(prim).CreatePrimvar(
+                        "isMatteObject", Sdf.ValueTypeNames.Bool).Set(True)
+            settings = carb.settings.get_settings()
+            settings.set(MATTE_OBJECT_SETTING, True)
+            settings.set(SHADOW_CATCHER_SETTING, True)
+        except Exception:
+            LOGGER.exception("failed to make the ground plane matte")
+
+    def _apply_viewport_grid(self, show_grid: bool) -> None:
+        """Toggle the viewport's grid overlay. Best-effort; never raises."""
+        try:
+            import carb
+
+            carb.settings.get_settings().set(VIEWPORT_GRID_SETTING, show_grid)
+            LOGGER.info("set %s to %s", VIEWPORT_GRID_SETTING, show_grid)
+        except Exception:
+            LOGGER.exception("failed to apply render.viewport_grid")
+
+    def _apply_lighting(self, lighting: Dict[str, Any]) -> None:
+        """Dome and key lights. Best-effort, so bad lighting cannot block boot.
+
+        A dome is what stops a scene reading as objects on a void: it lights every surface
+        from every direction the way a room does, and an untextured one still beats the
+        single default light.
+        """
+        if not lighting:
+            return
+        try:
+            from pxr import Gf, Sdf, UsdGeom, UsdLux
+
+            stage = self._isaac.omni_usd.get_context().get_stage()
+            dome = lighting.get("dome")
+            if dome is not None:
+                light = UsdLux.DomeLight.Define(stage, DOME_LIGHT_PRIM_PATH)
+                light.CreateIntensityAttr(
+                    float(dome.get("intensity", DEFAULT_DOME_INTENSITY)))
+                light.CreateColorAttr(Gf.Vec3f(
+                    *[float(v) for v in dome.get("color", DEFAULT_DOME_COLOR)]))
+                texture = dome.get("texture")
+                if texture:
+                    light.CreateTextureFileAttr(Sdf.AssetPath(str(texture)))
+                    light.CreateTextureFormatAttr(
+                        str(dome.get("texture_format", "latlong")))
+                rotation = dome.get("rotation_deg")
+                if rotation is not None:
+                    xformable = UsdGeom.Xformable(light)
+                    # clear first, so a re-apply replaces rather than stacks
+                    xformable.ClearXformOpOrder()
+                    xformable.AddRotateXYZOp().Set(Gf.Vec3f(0.0, 0.0, float(rotation)))
+            sphere = lighting.get("sphere_intensity")
+            if sphere is not None:
+                prim = stage.GetPrimAtPath(SPHERE_LIGHT_PRIM_PATH)
+                if prim.IsValid():
+                    UsdLux.SphereLight(prim).GetIntensityAttr().Set(float(sphere))
+        except Exception:
+            LOGGER.exception("failed to apply scene lighting")
 
     def prop_obstacles(self) -> List[Dict[str, Any]]:
         """Every prop as a box the viam motion service can treat as an obstacle.

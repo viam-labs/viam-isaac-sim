@@ -28,6 +28,14 @@ they live in isaac, not in the frame system - so callers must pass these in `wor
 on every Move or the arm will plan straight through the scenery.
 
 Attributes:
+  ground (object)                   - the floor: {"kind": "plane"|"grid"|"none",
+                                      "size", "color", "friction", "restitution",
+                                      "matte"}. The default grid reads as a CAD
+                                      viewport; a plane reads as a room.
+  render (object)                   - {"viewport_grid": bool}
+  lighting (object)                 - {"dome": {"intensity", "color", "texture",
+                                      "texture_format", "rotation_deg"},
+                                      "sphere_intensity": float}
   props (list)                      - objects spawned into the scene at boot:
                                       {"name", "type": "cube"|"usd",
                                        "position": [x,y,z] meters,
@@ -101,6 +109,9 @@ class IsaacWorld(Generic, EasyResource):
             livestream_width=int(attrs.get("livestream_width", 1280)),
             livestream_height=int(attrs.get("livestream_height", 720)),
             props=[dict(p) for p in attrs.get("props", [])],
+            ground=dict(attrs["ground"]) if attrs.get("ground") else None,
+            render=dict(attrs.get("render") or {}),
+            lighting=dict(attrs.get("lighting") or {}),
         )
         SimManager.get().ensure_booted(cfg)
 

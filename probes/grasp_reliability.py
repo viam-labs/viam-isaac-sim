@@ -21,6 +21,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from obstacle_check import box, tool_transform  # noqa: E402
+
+
+TOOL_LENGTH_MM = 120.0
+
+
+def grasp_height(props, part_pose):
+    """Flange height that puts the cup on the part's top face.
+
+    Derived from what the sim reports the part to be, not from a remembered number: the
+    part changed from an 80 mm carton to a 6 mm steel blank, and a hard-coded half-height
+    would have aimed the cup 37 mm inside it.
+    """
+    part = next((p for p in props if p["label"] == "part"), None)
+    half = (part["dims_mm"][2] / 2.0) if part else 0.0
+    return part_pose["position_mm"][2] + half + TOOL_LENGTH_MM
 from viam.components.arm import Arm  # noqa: E402
 from viam.components.generic import Generic  # noqa: E402
 from viam.components.gripper import Gripper  # noqa: E402
@@ -70,7 +85,7 @@ async def main():
             part = (await world.do_command(
                 {"command": "prop_poses", "names": ["part"]}))["props"]["part"]
             px, py, pz = part["position_mm"]
-            contact = pz + 40 + 120
+            contact = grasp_height(props, part)
 
             async def move(z, with_part):
                 await motion.move(
