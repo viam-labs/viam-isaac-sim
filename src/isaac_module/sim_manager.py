@@ -667,6 +667,80 @@ class SimManager:
             ee = self._isaac.SingleXFormPrim(ee_path)
         return IsaacArmHandle(self, art, ee)
 
+    def create_gripper(self, name: str, attrs: Dict[str, Any]) -> "GripperHandle":
+        self._require_booted()
+        if self.mock:
+            factory = lambda: MockGripperHandle(name, attrs)  # noqa: E731
+        else:
+            factory = lambda: self.run(  # noqa: E731
+                lambda: self._create_gripper_isaac(name, attrs), timeout=120.0
+            )
+        return self._cached_handle("gripper", name, attrs, factory)
+
+    def _create_gripper_isaac(self, name: str, attrs: Dict[str, Any]) -> "IsaacGripperHandle":
+        """Author a surface gripper and the joint it grips through.
+
+        Isaac's surface gripper does not grip from a point in space; it grips through
+        *attachment points*, which are D6 joints anchored to the body doing the holding.
+        The joint has to be authored here because nothing in the arm's USD has one: it is
+        the suction cup, expressed as physics.
+
+        The joint's requirements are not negotiable (isaac's own example lists them): D6,
+        enabled, excluded from the articulation, and no break force - a joint inside the
+        articulation would be solved as part of the arm instead of as a graspable contact.
+        """
+        from pxr import Gf, UsdPhysics
+
+        if self._isaac.robot_schema is None or self._isaac.GripperView is None:
+            raise RuntimeError(
+                "this isaac build has no surface gripper extension "
+                "(isaacsim.robot.surface_gripper); gripper components need it"
+            )
+
+        stage = self._isaac.omni_usd.get_context().get_stage()
+        parent = attrs.get("parent_prim")
+        if not parent:
+            raise ValueError(
+                f"gripper {name}: needs parent_prim, the prim it hangs off "
+                "(e.g. an arm's flange)"
+            )
+        if not stage.GetPrimAtPath(parent).IsValid():
+            raise ValueError(f"gripper {name}: parent_prim {parent!r} is not in the stage")
+
+        prim_name = _prim_name(name)
+        joint_path = f"{parent}/{prim_name}_suction_joint"
+        joint = UsdPhysics.Joint.Define(stage, joint_path)
+        joint.CreateBody0Rel().SetTargets([parent])
+        # Where the cup sits relative to the flange. The part is grabbed at this point,
+        # so it is the same offset the caller's tool geometry has to use.
+        offset = [float(v) for v in (attrs.get("offset") or (0.0, 0.0, 0.0))]
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(*offset))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateJointEnabledAttr().Set(True)
+        joint.CreateExcludeFromArticulationAttr().Set(True)
+
+        gripper_path = f"{parent}/{prim_name}_gripper"
+        self._isaac.robot_schema.CreateSurfaceGripper(stage, gripper_path)
+        gripper_prim = stage.GetPrimAtPath(gripper_path)
+        schema = self._isaac.robot_schema
+        gripper_prim.GetRelationship(
+            schema.Relations.ATTACHMENT_POINTS.name
+        ).SetTargets([joint_path])
+
+        def _set(attribute, value):
+            gripper_prim.GetAttribute(attribute.name).Set(float(value))
+
+        # Defaults chosen for a light carton on a vacuum cup: grip anything within a
+        # centimetre, and let it be pulled off rather than welded on.
+        _set(schema.Attributes.MAX_GRIP_DISTANCE, attrs.get("max_grip_distance", 0.01))
+        _set(schema.Attributes.COAXIAL_FORCE_LIMIT, attrs.get("coaxial_force_limit", 50.0))
+        _set(schema.Attributes.SHEAR_FORCE_LIMIT, attrs.get("shear_force_limit", 50.0))
+        _set(schema.Attributes.RETRY_INTERVAL, attrs.get("retry_interval_sec", 0.5))
+
+        view = self._isaac.GripperView(paths=gripper_path)
+        LOGGER.info("gripper %s: suction at %s, joint %s", name, gripper_path, joint_path)
+        return IsaacGripperHandle(self, view, gripper_path)
+
     def create_camera(self, name: str, attrs: Dict[str, Any]) -> "CameraHandle":
         self._require_booted()
         if self.mock:
@@ -866,6 +940,23 @@ def _import_isaac():
         from omni.isaac.core.utils.types import ArticulationAction
     ns.ArticulationAction = ArticulationAction
 
+    # Surface gripper: isaac's suction primitive. It fabricates a joint between the
+    # gripper and whatever is within reach of its attachment points, which is exactly
+    # what a vacuum tool does, and unlike a kinematic re-parent it can drop a part and
+    # can fail to pick one up.
+    try:
+        import omni.usd
+
+        from isaacsim.robot.surface_gripper import GripperView
+        from usd.schema.isaac import robot_schema
+        ns.GripperView = GripperView
+        ns.robot_schema = robot_schema
+        ns.omni_usd = omni.usd
+    except ImportError:
+        ns.GripperView = None
+        ns.robot_schema = None
+        ns.omni_usd = None
+
     try:
         import omni.client
         ns.client = omni.client
@@ -914,6 +1005,91 @@ def _import_isaac():
 # Handles - the interface component models talk to. All public methods are
 # safe to call from any thread.
 # ======================================================================
+
+
+class GripperHandle:
+    """A suction gripper, as the module's components see it."""
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+    def open(self) -> None:
+        raise NotImplementedError
+
+    def status(self) -> str:
+        """"Open", "Closing" or "Closed"."""
+        raise NotImplementedError
+
+    def gripped_objects(self) -> List[str]:
+        raise NotImplementedError
+
+
+class IsaacGripperHandle(GripperHandle):
+    """Drives isaac's surface gripper.
+
+    The suction is real physics, not a re-parent: isaac fabricates a joint to whatever
+    body is within the attachment point's reach when the gripper closes. So a grab can
+    fail because nothing was close enough, and a held part can be pulled off by its own
+    weight or by driving it into something - which is the behaviour a vacuum cup has and
+    a kinematic attach does not.
+    """
+
+    # The action value's sign is what matters, not its magnitude.
+    _CLOSE = 0.5
+    _OPEN = -0.5
+
+    def __init__(self, sim: "SimManager", view: Any, prim_path: str) -> None:
+        self._sim = sim
+        self._view = view
+        self._prim_path = prim_path
+
+    def close(self) -> None:
+        self._sim.run(lambda: self._view.apply_gripper_action([self._CLOSE]))
+
+    def open(self) -> None:
+        self._sim.run(lambda: self._view.apply_gripper_action([self._OPEN]))
+
+    def status(self) -> str:
+        def _status():
+            values = self._view.get_surface_gripper_status()
+            return str(values[0]) if len(values) else "Open"
+
+        return self._sim.run(_status)
+
+    def gripped_objects(self) -> List[str]:
+        def _objects():
+            got = self._view.get_gripped_objects()
+            if not len(got):
+                return []
+            first = got[0]
+            # One gripper, so one entry - which is itself a list of prim paths.
+            return [str(p) for p in (first if isinstance(first, (list, tuple)) else [first]) if p]
+
+        return self._sim.run(_objects)
+
+
+class MockGripperHandle(GripperHandle):
+    """Tracks open/closed with no physics, so the module runs without isaac.
+
+    It reports nothing gripped, deliberately. A mock that always claimed success would
+    let a round pass in mock and fail the moment it met a simulator.
+    """
+
+    def __init__(self, name: str, attrs: Dict[str, Any]) -> None:
+        self.name = name
+        self._closed = False
+
+    def close(self) -> None:
+        self._closed = True
+
+    def open(self) -> None:
+        self._closed = False
+
+    def status(self) -> str:
+        return "Closed" if self._closed else "Open"
+
+    def gripped_objects(self) -> List[str]:
+        return []
 
 
 class ArmHandle:

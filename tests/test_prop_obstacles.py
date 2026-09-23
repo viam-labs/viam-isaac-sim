@@ -71,7 +71,13 @@ def test_fixed_is_carried_through(obstacles):
     A fixed prop is an obstacle for the whole round. A dynamic one is an obstacle until
     an arm picks it up, and then becomes part of that arm.
     """
-    assert all(o["fixed"] for o in obstacles.values()), "the cell's scenery is all fixed"
+    scenery = {"belt", "good_tray", "bad_tray", "ground"}
+    assert all(obstacles[n]["fixed"] for n in scenery if n in obstacles), \
+        "the cell's scenery must be fixed"
+    # The carton is not scenery. It is an obstacle while it sits on the belt and becomes
+    # part of the arm holding it, and `fixed` is the only thing that says which.
+    assert obstacles["part"]["fixed"] is False, \
+        "the part must be dynamic, or the gripper has nothing it can actually pick up"
 
 
 def test_a_scene_with_its_own_stage_reports_no_floor():

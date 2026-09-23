@@ -81,28 +81,80 @@
             "name": "belt",
             "type": "cube",
             "fixed": true,
-            "position": [0.5472, -0.798, 0.57],
+            "position": [
+              0.5472,
+              -0.798,
+              0.57
+            ],
             "size": 1.0,
-            "scale": [0.2584, 0.836, 0.076],
-            "color": [0.18, 0.18, 0.2]
+            "scale": [
+              0.2584,
+              0.836,
+              0.076
+            ],
+            "color": [
+              0.18,
+              0.18,
+              0.2
+            ]
           },
           {
             "name": "good_tray",
             "type": "cube",
             "fixed": true,
-            "position": [0.6156, 0.4712, 0.5515],
+            "position": [
+              0.6156,
+              0.4712,
+              0.5515
+            ],
             "size": 0.22,
-            "scale": [1.0, 1.0, 0.23],
-            "color": [0.15, 0.45, 0.2]
+            "scale": [
+              1.0,
+              1.0,
+              0.23
+            ],
+            "color": [
+              0.15,
+              0.45,
+              0.2
+            ]
           },
           {
             "name": "bad_tray",
             "type": "cube",
             "fixed": true,
-            "position": [0.6156, 0.7144, 0.5515],
+            "position": [
+              0.6156,
+              0.7144,
+              0.5515
+            ],
             "size": 0.22,
-            "scale": [1.0, 1.0, 0.23],
-            "color": [0.55, 0.15, 0.15]
+            "scale": [
+              1.0,
+              1.0,
+              0.23
+            ],
+            "color": [
+              0.55,
+              0.15,
+              0.15
+            ]
+          },
+          {
+            "name": "part",
+            "type": "cube",
+            "fixed": false,
+            "position": [
+              0.5472,
+              -0.4256,
+              0.66
+            ],
+            "size": 0.08,
+            "color": [
+              0.75,
+              0.6,
+              0.35
+            ]
           }
         ]
       }
@@ -114,18 +166,36 @@
       "model": "erh:isaac-sim:arm",
       "frame": {
         "parent": "world",
-        "translation": { "x": 0, "y": -380, "z": 391.4 },
+        "translation": {
+          "x": 0,
+          "y": -380,
+          "z": 391.4
+        },
         "orientation": {
           "type": "ov_degrees",
-          "value": { "x": 0, "y": 0, "z": 1, "th": 180 }
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 180
+          }
         }
       },
       "attributes": {
         "world": "sim-world",
         "asset": "ur5e",
         "joint_limit_deg": 180,
-        "joint_limits_deg": { "shoulder_lift_joint": [-270, 90] },
-        "position": [0.0, -0.38, 0.3914],
+        "joint_limits_deg": {
+          "shoulder_lift_joint": [
+            -270,
+            90
+          ]
+        },
+        "position": [
+          0.0,
+          -0.38,
+          0.3914
+        ],
         "end_effector_prim": "/World/arm_a/wrist_3_link/flange"
       }
     },
@@ -136,18 +206,36 @@
       "model": "erh:isaac-sim:arm",
       "frame": {
         "parent": "world",
-        "translation": { "x": 0, "y": 380, "z": 391.4 },
+        "translation": {
+          "x": 0,
+          "y": 380,
+          "z": 391.4
+        },
         "orientation": {
           "type": "ov_degrees",
-          "value": { "x": 0, "y": 0, "z": 1, "th": 180 }
+          "value": {
+            "x": 0,
+            "y": 0,
+            "z": 1,
+            "th": 180
+          }
         }
       },
       "attributes": {
         "world": "sim-world",
         "asset": "ur5e",
         "joint_limit_deg": 180,
-        "joint_limits_deg": { "shoulder_lift_joint": [-270, 90] },
-        "position": [0.0, 0.38, 0.3914],
+        "joint_limits_deg": {
+          "shoulder_lift_joint": [
+            -270,
+            90
+          ]
+        },
+        "position": [
+          0.0,
+          0.38,
+          0.3914
+        ],
         "end_effector_prim": "/World/arm_b/wrist_3_link/flange"
       }
     },
@@ -158,14 +246,62 @@
       "model": "erh:isaac-sim:camera",
       "frame": {
         "parent": "world",
-        "translation": { "x": 950, "y": 0, "z": 836 }
+        "translation": {
+          "x": 950,
+          "y": 0,
+          "z": 836
+        }
       },
       "attributes": {
         "world": "sim-world",
-        "target": [0.5168, 0.0, 0.8512],
+        "target": [
+          0.5168,
+          0.0,
+          0.8512
+        ],
         "fov_deg": 20.83,
         "width": 1280,
         "height": 720
+      }
+    },
+    {
+      "name": "suction-a",
+      "namespace": "rdk",
+      "type": "gripper",
+      "model": "erh:isaac-sim:gripper",
+      "attributes": {
+        "world": "sim-world",
+        "parent_prim": "/World/arm_a/wrist_3_link/flange",
+        "offset": [
+          0.0,
+          0.0,
+          0.12
+        ],
+        "max_grip_distance": 0.02,
+        "geometry": {
+          "radius_mm": 25,
+          "length_mm": 120
+        }
+      }
+    },
+    {
+      "name": "suction-b",
+      "namespace": "rdk",
+      "type": "gripper",
+      "model": "erh:isaac-sim:gripper",
+      "attributes": {
+        "world": "sim-world",
+        "parent_prim": "/World/arm_b/wrist_3_link/flange",
+        "offset": [
+          0.0,
+          0.0,
+          0.12
+        ],
+        "max_grip_distance": 0.02,
+        "geometry": {
+          "radius_mm": 25,
+          "length_mm": 120
+        }
       }
     }
   ]

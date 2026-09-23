@@ -23,6 +23,11 @@
       "model": "erh:isaac-sim:base",
       "api": "rdk:component:base",
       "short_description": "A simulated differential-drive base"
+    },
+    {
+      "model": "erh:isaac-sim:gripper",
+      "api": "rdk:component:gripper",
+      "short_description": "Suction gripper in Isaac Sim, driven by isaac's surface gripper"
     }
   ],
   "entrypoint": "dist/run.sh",
