@@ -98,6 +98,9 @@ class SimConfig:
     boot_timeout: float = 300.0
     # IP the livestream advertises to clients; auto-detected if empty
     livestream_public_ip: str = ""
+    # resolution kit renders (and therefore streams) at
+    livestream_width: int = 1280
+    livestream_height: int = 720
     # props to spawn into the scene at boot; each entry:
     #   {"type": "cube"|"usd", "name": ..., "position": [x,y,z] (m),
     #    "size": edge_m, "scale": [sx,sy,sz], "color": [r,g,b] 0-1,
@@ -250,7 +253,25 @@ class SimManager:
         level = cfg.kit_log_level.capitalize()
         sys.argv.append(f"--/log/outputStreamLevel={level}")
 
-        self._sim_app = SimulationApp({"headless": cfg.headless})
+        streaming = cfg.livestream and cfg.headless
+        launch: Dict[str, Any] = {"headless": cfg.headless}
+        if streaming:
+            # SimulationApp hides kit's UI whenever headless is set, which
+            # leaves a connected streaming client looking at an empty frame.
+            # These mirror isaacsim.exp.full.streaming and the livestream
+            # standalone example: keep the UI, render it at a size worth
+            # streaming, and show the default grid.
+            launch.update(
+                hide_ui=False,
+                width=cfg.livestream_width,
+                height=cfg.livestream_height,
+                window_width=cfg.livestream_width,
+                window_height=cfg.livestream_height,
+                renderer="RaytracedLighting",
+                display_options=3286,
+            )
+
+        self._sim_app = SimulationApp(launch)
 
         try:
             import carb.settings
@@ -259,7 +280,7 @@ class SimManager:
         except Exception:
             pass
 
-        if cfg.livestream and cfg.headless:
+        if streaming:
             try:
                 try:
                     from isaacsim.core.utils.extensions import enable_extension
@@ -267,10 +288,20 @@ class SimManager:
                     from omni.isaac.core.utils.extensions import enable_extension
 
                 ip = cfg.livestream_public_ip or _local_ip()
-                self._sim_app.set_setting("/app/livestream/enabled", True)
+                self._sim_app.set_setting("/app/window/drawMouse", True)
+                # the client asks to resize the stream as soon as it connects;
+                # without this the request is refused and the view stays blank
+                self._sim_app.set_setting("/app/livestream/allowResize", True)
+                self._sim_app.set_setting("/app/livestream/port", 49100)
                 if ip:
                     self._sim_app.set_setting("/app/livestream/publicEndpointAddress", ip)
-                enable_extension("omni.kit.livestream.webrtc")
+                # 5.0 ships the streaming service under omni.services; 4.5 and
+                # older only have the kit extension
+                for ext in ("omni.services.livestream.nvcf", "omni.kit.livestream.webrtc"):
+                    if enable_extension(ext):
+                        break
+                else:
+                    raise RuntimeError("no livestream extension could be enabled")
                 LOGGER.info(
                     "livestream enabled - connect the 'Isaac Sim WebRTC Streaming "
                     "Client' app to %s (TCP 49100 + UDP 47998 must be reachable)",
@@ -538,11 +569,12 @@ class SimManager:
         if usd:
             self._isaac.add_reference_to_stage(usd_path=usd, prim_path=prim_path)
 
+        # Set the base pose directly on the USD prim. The `position=` /
+        # `orientation=` kwargs on SingleArticulation don't persist across the
+        # world.reset() below when another articulation is already in the
+        # scene, so every arm silently ends up at the world origin and their
+        # bodies penetrate. Writing to USD persists across resets.
         position = to_vec3(attrs.get("position"))
-        kwargs: Dict[str, Any] = dict(
-            prim_path=prim_path, name=name, position=list(position)
-        )
-
         # The frame config orients the arm's *kinematic base*, which for some assets is
         # not the USD's root prim (see _UR_BASE_ROTATION_WXYZ). Fold the asset's fixed
         # offset in here, on the isaac side only: the frame system must keep describing
@@ -558,30 +590,22 @@ class SimManager:
             base_rotation = None
         if base_rotation is not None:
             orientation = quat_mul(orientation, tuple(float(v) for v in base_rotation))
-        if orientation != (1.0, 0.0, 0.0, 0.0):
-            kwargs["orientation"] = list(orientation)
-        art = self._isaac.SingleArticulation(**kwargs)
-        self.world.scene.add(art)
 
-        # Placing the arm takes both calls, and the order matters.
-        #
-        # The position/orientation kwargs above are not enough on their own: measured on
-        # isaac 6.1, an arm constructed with them came up at the origin, unrotated, so
-        # the base rotation was discarded and a second arm silently stacked on the first.
-        #
-        # set_world_pose alone is not enough either, because it sets the *current* pose
-        # while world.reset() restores the *default* one - and this method resets on
-        # every arm creation, so building arm-b then arm-a left arm-a back at the origin
-        # while arm-b, whose pose had been baked in by the later reset, looked fine. That
-        # asymmetry is what the end-to-end check caught: one arm correct, one mirrored.
-        #
-        # So: make the intended pose the default first, let reset() apply it, then set it
-        # outright as well for isaac builds where the default state is not honoured.
-        default_state = getattr(art, "set_default_state", None)
-        if default_state is not None:
-            default_state(position=list(position), orientation=list(orientation))
+        # Write the pose onto the USD prim rather than passing it to
+        # SingleArticulation: those kwargs do not survive the world.reset() below once
+        # another articulation is in the scene, so every arm silently lands on the origin
+        # and the bodies interpenetrate. USD state persists across resets.
+        pose_kwargs: Dict[str, Any] = {"position": list(position)}
+        if orientation != (1.0, 0.0, 0.0, 0.0):
+            pose_kwargs["orientation"] = list(orientation)
+        try:
+            self._isaac.SingleXFormPrim(prim_path).set_world_pose(**pose_kwargs)
+        except Exception:
+            LOGGER.exception("failed to set base pose for %s", name)
+
+        art = self._isaac.SingleArticulation(prim_path=prim_path, name=name)
+        self.world.scene.add(art)
         self.world.reset()
-        art.set_world_pose(position=list(position), orientation=list(orientation))
 
         ee = None
         ee_path = attrs.get("end_effector_prim")
