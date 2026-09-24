@@ -181,3 +181,46 @@ Delete `.scratch/stations.json` when F1 lands — it is a byte-identical copy of
 | defect marks too small for the camera | the oracle sees them, a detector never could | measure mark pixels at the model input as the old cell did |
 | trays are 23 mm apart | a place into one clips the other | still unresolved from the earlier review |
 | the part's planner box omits the flag | the flag reaches 30 mm past the declared half-width on the −y side — the side arm-b grips — and the carried-part transform inherits the same box | report the true bounds, or a box per child |
+
+
+## Blocked: the handoff geometry, and why
+
+The round gets as far as pick, lift and two of the five first-check
+presentations. The handoff does not go, and repeated attempts say it is the design
+rather than the implementation.
+
+Both arms grip a **±y flat side**, and their bases are at y=∓380. A handoff point shared
+between them therefore sits near y=0, which puts each arm's flange 175 mm across the
+centreline on the *far* side of the part. Measured, repeatedly: arm-a reaches that
+position and then stalls with the wrist roll about 160° from where it needs to be, at
+every roll offered it. The position is reachable; the configuration is not, with a part
+on the cup.
+
+Moving the stand toward either arm only moves the problem: whatever comfort one arm
+gains, the other loses, because the grip axis is the same axis their bases are separated
+along.
+
+**The way out is for the second arm to grip a different face.** The mailbox's door end
+and back end are flat, so arm-b can take it along **x** and approach without crossing the
+centreline at all. That still leaves the +y face - the one arm-a's cup covers - free for
+the second check, which is the whole point of the handoff. It needs `side_grip` to handle
+±x, a handoff stand orientation to match, and the presentation set re-derived for an
+end grip.
+
+That is a design change rather than a fix, so it is written down rather than made.
+
+## Where the round stands
+
+| step | state |
+|---|---|
+| pick by a flat side | works |
+| lift clear of the belt | works, in joint space |
+| first check | 2 of 5 faces |
+| handoff | blocked, above |
+| second check | not reached |
+| place | not reached |
+
+The three presentations that still fail, and the handoff, all fail the same way: the
+flange reaches the commanded position and the wrist stalls short. A loaded arm has far
+less wrist authority than an empty one, and every pose in this round was chosen without
+knowing that.
