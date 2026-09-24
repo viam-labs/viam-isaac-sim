@@ -11,6 +11,6 @@ test:
 	python3 -m pytest tests/
 
 clean:
-	rm -rf module.tar.gz dist
+	rm -rf module.tar.gz run.sh
 
-.PHONY: setup test clean
+.PHONY: test clean
