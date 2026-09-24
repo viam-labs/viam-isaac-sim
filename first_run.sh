@@ -53,14 +53,18 @@ if [ "$(id -u)" = "0" ] || [ -n "$SUDO" ]; then
     # is known to crash the RTX renderer (isaac-sim/IsaacSim#537, #643).
     # 580.x is the validated branch for Isaac 5.0 on Linux.
     if ! command -v nvidia-smi >/dev/null 2>&1; then
-        log "no NVIDIA driver found - installing the validated 580 branch"
-	if [ $UPDATED = 0 ]; then
-	    $SUDO apt-get update -qq || log "WARNING: apt-get update failed; continuing"
+        if [ ${SKIP_NVIDIA_DRIVER:-0} = 1 ]; then
+            echo "skipping nvidia driver install because SKIP_NVIDIA_DRIVER=1"
+	else
+            log "no NVIDIA driver found - installing the validated 580 branch"
+            if [ $UPDATED = 0 ]; then
+	        $SUDO apt-get update -qq || log "WARNING: apt-get update failed; continuing"
+            fi
+            $SUDO apt-get install -y -qq nvidia-driver-580 \
+                || $SUDO apt-get install -y -qq nvidia-driver-580-open \
+                || log "WARNING: driver install failed; install the 580-branch NVIDIA driver manually"
+            log "NOTE: a REBOOT is likely required before the GPU is usable"
 	fi
-        $SUDO apt-get install -y -qq nvidia-driver-580 \
-            || $SUDO apt-get install -y -qq nvidia-driver-580-open \
-            || log "WARNING: driver install failed; install the 580-branch NVIDIA driver manually"
-        log "NOTE: a REBOOT is likely required before the GPU is usable"
     else
         DRIVER_VER="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)"
         log "NVIDIA driver present: ${DRIVER_VER:-unknown}"
