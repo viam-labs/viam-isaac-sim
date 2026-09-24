@@ -169,44 +169,77 @@ async def main():
                 print(f"  {caption}: {str(exc)[:70]}")
                 await asyncio.sleep(1.0)
 
-        # Open with a real pick, because that is the part worth watching: the suction
-        # either carries the carton or it does not, and the video says which.
+        # Open with a real pick, because that is the part worth watching.
+        #
+        # The cup goes on a FLAT SIDE, not the crown. A vacuum cup needs a flat face to
+        # seal against; isaac will happily joint to a curved one because it raycasts
+        # rather than modelling a seal, which makes a physically wrong grasp look fine.
+        # The mailbox is flat-sided up to its shoulder, so that is where the cup belongs.
         gripper = Gripper.from_robot(robot, "suction-a")
         part = (await world.do_command(
             {"command": "prop_poses", "names": ["part"]}))["props"]["part"]
         px, py, pz = part["position_mm"]
-        contact = grasp_height(props, part)
+        spec = next(p for p in props if p["label"] == "part")
+        half_width = spec["dims_mm"][1] / 2.0
+        # Grip below the shoulder, on the flat panel. Approach from +y, the open side:
+        # the belt runs away in -y, so coming from that side puts the arm over the belt
+        # with 30 mm of clearance and the planner refuses it. The part's +y face sits
+        # just past the belt edge, so there is room on that side.
+        grip_y = py + half_width + TOOL_LENGTH_MM
+        grip_z = pz - 25.0
+        SIDE = dict(o_x=0.0, o_y=-1.0, o_z=0.0, theta=0.0)
 
-        def at(z):
-            return (px, py, z)
+        async def side_move(x, y, z, caption, with_part=True):
+            recorder.caption = caption
+            try:
+                await motion.move(
+                    component_name="arm-a",
+                    destination=PoseInFrame(reference_frame="world", pose=Pose(
+                        x=x, y=y, z=z, **SIDE)),
+                    world_state=world_state(with_part))
+                return True
+            except Exception as exc:  # noqa: BLE001
+                recorder.caption = f"{caption} - FAILED"
+                print(f"  {caption}: {str(exc)[:80]}")
+                await asyncio.sleep(0.8)
+                return False
 
-        await asyncio.sleep(1.0)
-        recorder.caption = "arm-b clears"
-        await go("arm-b", HOMES["arm-b"], "arm-b clears")
-        await go("arm-a", at(contact + 150), "arm-a  approach the carton")
-        await go("arm-a", at(contact), "arm-a  down to the carton", with_part=False)
         async def say(tag):
             pose = (await world.do_command(
                 {"command": "prop_poses", "names": ["part"]}))["props"]["part"]
             ee = await Arm.from_robot(robot, "arm-a").get_end_position()
             held = (await gripper.is_holding_something()).is_holding_something
-            print(f"    {tag:>16}: flange z={ee.z:7.1f}  part z={pose['position_mm'][2]:7.1f}"
-                  f"  holding={held}")
+            print(f"    {tag:>14}: flange=({ee.x:6.0f},{ee.y:6.0f},{ee.z:6.0f})"
+                  f"  part z={pose['position_mm'][2]:7.1f}  holding={held}")
 
-        print(f"    pick: part at z={pz:.1f}, contact flange z={contact:.1f}")
+        await asyncio.sleep(1.0)
+        await go("arm-b", HOMES["arm-b"], "arm-b clears")
+        print(f"    pick: part at ({px:.0f},{py:.0f},{pz:.0f}), "
+              f"cup on the flat side at y={grip_y:.0f}")
+        # No separate approach waypoint: the planner already routes around the belt and
+        # the trays, and a hand-placed standoff pose just gave it somewhere to stall.
+        await side_move(px, grip_y, grip_z, "arm-a  cup onto the flat side",
+                        with_part=False)
         await say("at contact")
-        recorder.caption = "suction-a  grab"
         caught = await gripper.grab()
         await asyncio.sleep(0.6)
         await say("after grab")
-        await go("arm-a", at(contact + 260), f"arm-a  lift (holding={caught})",
-                 with_part=False)
+        await side_move(px, grip_y, grip_z + 240, f"arm-a  lift (holding={caught})",
+                        with_part=False)
         await say("after lift")
-        await go("arm-a", (px - 120, py + 220, contact + 260), "arm-a  carry",
-                 with_part=False)
+
+        # Set it down further along the belt rather than opening the cup in mid-air.
+        # Releasing a part over nothing looks like a dropped part, which is exactly
+        # what it would be on a real line.
+        place_x = px + 115.0
+        await side_move(place_x, grip_y, grip_z + 240, "arm-a  carry", with_part=False)
+        await side_move(place_x, grip_y, grip_z + 6, "arm-a  set it down",
+                        with_part=False)
         recorder.caption = "suction-a  release"
         await gripper.open()
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1.2)
+        await say("after place")
+        await side_move(place_x, grip_y, grip_z + 240, "arm-a  clear", with_part=False)
 
         for station, (arm, position) in STATIONS["stations"].items():
             if station.startswith("FORBIDDEN"):
