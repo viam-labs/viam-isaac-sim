@@ -6,12 +6,7 @@
 # Isaac Sim:
 #   - system libraries kit needs (vulkan, GL)
 #   - NVIDIA driver if none is present (a reboot may be needed after)
-#   - the python version Isaac Sim requires (deadsnakes PPA on 24.04)
-#   - Isaac Sim itself, pip-installed into a venv under the module data dir
-#   - this module's python deps into the same venv
-#
-# run.sh finds the result via the marker file written at the end, so no
-# ISAAC_SIM_PATH / ISAAC_PYTHON configuration is needed.
+#   - Isaac Sim itself, uv-installed into a venv under the module data dir
 #
 # The isaacsim download is large (10GB+); if it exceeds viam-server's default
 # first_run timeout, set "first_run_timeout": "2h0m0s" on the module config.
@@ -83,3 +78,12 @@ if [ "$(id -u)" = "0" ] || [ -n "$SUDO" ]; then
         esac
     fi
 fi
+
+export PATH="$PATH:$HOME/.local/bin"
+if ! command -v uv >& /dev/null; then
+	# todo: better way to manage min version of uv here
+	curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
+
+# uv sync in first_run.sh because it has a longer default timeout
+uv sync
