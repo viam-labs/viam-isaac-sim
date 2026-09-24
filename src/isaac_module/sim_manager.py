@@ -493,13 +493,21 @@ class SimManager:
         if usd:
             self._isaac.add_reference_to_stage(usd_path=usd, prim_path=prim_path)
 
+        # Set the base pose directly on the USD prim. The `position=` /
+        # `orientation=` kwargs on SingleArticulation don't persist across the
+        # world.reset() below when another articulation is already in the
+        # scene, so every arm silently ends up at the world origin and their
+        # bodies penetrate. Writing to USD persists across resets.
         position = to_vec3(attrs.get("position"))
-        kwargs: Dict[str, Any] = dict(
-            prim_path=prim_path, name=name, position=list(position)
-        )
+        pose_kwargs: Dict[str, Any] = {"position": list(position)}
         if attrs.get("orientation_wxyz") is not None:
-            kwargs["orientation"] = [float(v) for v in attrs["orientation_wxyz"]]
-        art = self._isaac.SingleArticulation(**kwargs)
+            pose_kwargs["orientation"] = [float(v) for v in attrs["orientation_wxyz"]]
+        try:
+            self._isaac.SingleXFormPrim(prim_path).set_world_pose(**pose_kwargs)
+        except Exception:
+            LOGGER.exception("failed to set base pose for %s", name)
+
+        art = self._isaac.SingleArticulation(prim_path=prim_path, name=name)
         self.world.scene.add(art)
         self.world.reset()
 
