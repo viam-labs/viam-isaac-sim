@@ -8,7 +8,7 @@ export ACCEPT_EULA=${ACCEPT_EULA:-Y}
 export OMNI_KIT_ALLOW_ROOT=${OMNI_KIT_ALLOW_ROOT:-1}
 
 export PATH="$PATH:$HOME/.local/bin"
-if [ ! $(command -v uv) ]; then
+if ! command -v uv >& /dev/null; then
 	# todo: better way to manage min version of uv here
 	curl -LsSf https://astral.sh/uv/install.sh | sh
 fi

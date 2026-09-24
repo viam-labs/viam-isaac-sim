@@ -25,11 +25,10 @@
       "short_description": "A simulated differential-drive base"
     }
   ],
-  "entrypoint": "dist/run.sh",
+  "entrypoint": "run.sh",
   "first_run": "first_run.sh",
   "build": {
     "build": "make module.tar.gz",
-    "setup": "make setup",
     "path": "module.tar.gz",
     "arch": [
       "linux/amd64"
