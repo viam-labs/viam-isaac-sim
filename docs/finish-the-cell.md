@@ -122,6 +122,31 @@ itself:
 `prop_poses`, not `is_holding_something`. The gripper reported a grip it did not have for
 most of a day; a test that trusts it would have passed throughout.
 
+**T4. Failure modes this project has actually hit, which the list above misses:**
+
+* *swept off the belt before the pick* — the final approach drops the part from the
+  obstacle set, so assert its pose is unchanged from spawn until `grab()` returns;
+* *slip during a carry* — a z-only check misses rotation; assert the part's pose
+  **relative to the flange** is constant across each carry;
+* *the held part never entering `world_state`* — no probe has actually attached it as a
+  `Transform` yet, despite the plan calling the mechanism proven. The round must build it
+  and the test must refuse a carry without it;
+* *a stale weld across a reset* — `reset` snaps the part back but does not open the cups,
+  so a failed round leaves the next one starting with the part welded to arm-b. The
+  fixture opens both grippers first;
+* *`place_bad` timing out in sequence*, still unexplained from an earlier session, lands
+  squarely on the place step.
+
+Keep `grasp_reliability.py`'s *agreement* check as an assertion too — a gripper whose
+claim stops matching reality should be named, not routed around silently.
+
+**T5. Shape.** One test per claim over one sequential round would run five rounds and fail
+all five identically on a bad pick. Run each round once in a session-scoped fixture that
+returns a **trace** — poses, claims and defect state at every stage — and write the
+assertions over the trace. The second defect set is a second fixture. Gate with a
+`machine` marker skipped unless the API key is present; there is no pytest config or CI
+workflow yet, so "runs in CI" is aspirational for T1 too until that exists.
+
 ## How this gets verified
 
 * `probes/record_cell.py` after each milestone — the video has found what probes missed
