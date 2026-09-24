@@ -1080,11 +1080,69 @@ class SimManager:
         # rig authored after the last reset is never seen.
         self.world.reset()
 
+        self._author_gripper_visual(stage, parent, name, offset, attrs)
+
         view = self._isaac.GripperView(paths=rig.gripper_path)
         LOGGER.info("gripper %s: rig %s on body %s, cup axis %s in its frame",
                     name, rig.scope_path, body_path,
                     [round(v, 3) for v in direction])
         return IsaacGripperHandle(self, view, rig.gripper_path)
+
+    def _author_gripper_visual(
+        self, stage: Any, parent_path: str, name: str,
+        offset: List[float], attrs: Dict[str, Any],
+    ) -> None:
+        """Give the tool something to look at.
+
+        The cup exists to the planner (a capsule in world_state) and to physics (the
+        attachment rig), but nothing renders it, so the arm appears to pick things up
+        with nothing on the end of it - which is exactly the kind of gap watching the
+        video catches and a probe never does.
+
+        Visual only: no CollisionAPI. A second collider on the tool would fight the one
+        the planner already reasons about, and would be the arm colliding with itself.
+        """
+        import math
+
+        from pxr import Gf, UsdGeom
+
+        if attrs.get("visual") is False:
+            return
+        spec = attrs.get("geometry") or {}
+        radius = float(spec.get("radius_mm", 25.0)) / 1000.0
+        length = math.sqrt(sum(v * v for v in offset)) or 0.12
+
+        root_path = f"{parent_path}/{_prim_name(name)}_visual"
+        root = UsdGeom.Xform.Define(stage, root_path)
+        # Point the visual down the same axis the cup acts along rather than assuming
+        # one: `offset` is in this prim's frame and is the only statement of it. The
+        # tubes are built along +Z, so this is the rotation taking +Z onto that.
+        direction = [v / length for v in offset] if length else [0.0, 0.0, 1.0]
+        dot = max(-1.0, min(1.0, direction[2]))
+        if dot > 1.0 - 1e-9:
+            quat = Gf.Quatf(1.0, Gf.Vec3f(0.0, 0.0, 0.0))
+        elif dot < -1.0 + 1e-9:
+            quat = Gf.Quatf(0.0, Gf.Vec3f(1.0, 0.0, 0.0))
+        else:
+            axis = Gf.Vec3f(-direction[1], direction[0], 0.0).GetNormalized()
+            half = math.acos(dot) / 2.0
+            quat = Gf.Quatf(math.cos(half), axis * math.sin(half))
+        UsdGeom.Xformable(root.GetPrim()).AddOrientOp().Set(quat)
+
+        def tube(suffix, r, h, z, colour):
+            prim = UsdGeom.Cylinder.Define(stage, f"{root_path}/{suffix}")
+            prim.CreateRadiusAttr(r)
+            prim.CreateHeightAttr(h)
+            prim.CreateAxisAttr("Z")
+            prim.CreateExtentAttr([Gf.Vec3f(-r, -r, -h / 2), Gf.Vec3f(r, r, h / 2)])
+            UsdGeom.Xformable(prim.GetPrim()).AddTranslateOp().Set(Gf.Vec3d(0, 0, z))
+            prim.CreateDisplayColorAttr([Gf.Vec3f(*colour)])
+
+        # A vacuum tool: a coupling at the flange, a stem, and the cup at the tip.
+        body = length * 0.62
+        tube("coupling", radius * 1.25, length * 0.14, length * 0.07, (0.26, 0.27, 0.30))
+        tube("stem", radius * 0.55, body, length * 0.14 + body / 2.0, (0.72, 0.73, 0.75))
+        tube("cup", radius, length * 0.22, length - length * 0.11, (0.12, 0.12, 0.14))
 
     def create_camera(self, name: str, attrs: Dict[str, Any]) -> "CameraHandle":
         self._require_booted()
