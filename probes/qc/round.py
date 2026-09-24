@@ -350,7 +350,7 @@ def lifted(pose, by_mm: float):
 
 # ---- the round ---------------------------------------------------------------
 
-CLEAR_MM = 240.0
+CLEAR_MM = 140.0
 SETTLE_S = 0.6
 
 
@@ -435,6 +435,33 @@ async def set_down(clients: Clients, cell: Cell, props, trace: Trace, held: Held
     await move(clients, arm, lifted(target, CLEAR_MM), world_state(props))
 
 
+async def unwind_wrist(clients: Clients, arm: str, step_deg: float = 30.0) -> None:
+    """Bring the tool roll back toward zero, in joint space, a step at a time.
+
+    A presentation leaves the wrist wherever it ended, and the next Cartesian plan is
+    then asked for a roll the loaded arm will not complete. Joint space does not
+    reconsider the wrist the way IK does, and small steps let the part swing through
+    rather than sweeping the whole arc at once.
+    """
+    for _ in range(12):
+        joints = list((await clients.arms[arm].get_joint_positions()).values)
+        roll = joints[5]
+        if abs(roll) < step_deg:
+            joints[5] = 0.0
+            try:
+                await clients.arms[arm].move_to_joint_positions(
+                    JointPositions(values=joints))
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        joints[5] = roll - step_deg * (1 if roll > 0 else -1)
+        try:
+            await clients.arms[arm].move_to_joint_positions(
+                JointPositions(values=joints))
+        except Exception:  # noqa: BLE001 - as far as it gets is far enough
+            return
+
+
 async def carry_neutral(clients: Clients, cell: Cell, props, held: Held) -> None:
     """Bring the part back to a plain pose before the next leg.
 
@@ -442,7 +469,8 @@ async def carry_neutral(clients: Clients, cell: Cell, props, held: Held) -> None
     is where the planner times out. A neutral pose in between costs one move and gives
     every following plan a sane start.
     """
-    neutral = ((420.0, -260.0 if held.arm == "arm-a" else 260.0, 800.0),
+    await unwind_wrist(clients, held.arm)
+    neutral = ((430.0, -230.0 if held.arm == "arm-a" else 230.0, 780.0),
                {"o_x": 0.0, "o_y": -1.0 if held.arm == "arm-a" else 1.0,
                 "o_z": 0.0, "theta": 0.0})
     await move(clients, held.arm, neutral, world_state(props, held=held))
@@ -520,6 +548,7 @@ async def present(clients: Clients, cell: Cell, props, trace: Trace, held: Held,
     for face, pose in cell.present_poses(side):
         state = world_state(props, held=held)
         try:
+            await unwind_wrist(clients, held.arm)
             position, orientation = pose
             current = await clients.motion.get_pose(
                 component_name=held.arm, destination_frame="world")
