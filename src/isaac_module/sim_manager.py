@@ -1083,9 +1083,13 @@ class SimManager:
         self._author_gripper_visual(stage, parent, name, offset, attrs)
 
         view = self._isaac.GripperView(paths=rig.gripper_path)
-        LOGGER.info("gripper %s: rig %s on body %s, cup axis %s in its frame",
-                    name, rig.scope_path, body_path,
-                    [round(v, 3) for v in direction])
+        # The import report matters: without PhysxSchema the rig's ghost anchor keeps
+        # its gravity, and an anchor that falls while welded to the wrist is a wrist
+        # that cannot turn.
+        LOGGER.info("gripper %s: rig %s on body %s, cup axis %s in its frame; isaac "
+                    "reports %s", name, rig.scope_path, body_path,
+                    [round(v, 3) for v in direction],
+                    self._isaac.gripper_modules.get("report"))
         return IsaacGripperHandle(self, view, rig.gripper_path)
 
     def _author_gripper_visual(

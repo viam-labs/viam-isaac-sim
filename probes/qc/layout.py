@@ -59,6 +59,7 @@ class Cell:
     part: Box
     belt: Box
     trays: Dict[str, Box]
+    handoff: Box
     camera_mm: Vec3
     camera_target_mm: Vec3
 
@@ -93,6 +94,7 @@ class Cell:
             part=box("part"),
             belt=box("belt"),
             trays={"good": box("good_tray"), "bad": box("bad_tray")},
+            handoff=box("handoff_stand"),
             camera_mm=(float(translation["x"]), float(translation["y"]),
                        float(translation["z"])),
             camera_target_mm=tuple(
@@ -122,12 +124,24 @@ class Cell:
     def pick(self, side: str = "+y") -> Pose:
         return self.side_grip(self.part.centre_mm, side)
 
-    def place(self, tray: str, side: str) -> Pose:
+    # Let go a few millimetres up rather than pressing the part onto the surface.
+    # Driving a rigid part onto a rigid surface is contact the arm cannot push through,
+    # so it stalls short of its commanded pose and the move fails - with the part
+    # already where it needs to be.
+    RELEASE_GAP_MM = 8.0
+
+    def resting_on(self, surface: Box, gap_mm: float = 0.0) -> Vec3:
+        """Where the part's centre sits when it rests on a surface."""
+        return (surface.centre_mm[0], surface.centre_mm[1],
+                surface.top_mm + self.part.dims_mm[2] / 2.0 + gap_mm)
+
+    def handoff_grip(self, side: str, gap_mm: float = 0.0) -> Pose:
+        """Flange pose for the part sitting on the handoff stand, held by `side`."""
+        return self.side_grip(self.resting_on(self.handoff, gap_mm), side)
+
+    def place(self, tray: str, side: str, gap_mm: float = 0.0) -> Pose:
         """Flange pose to set the part down on a tray, held by `side`."""
-        box = self.trays[tray]
-        resting = (box.centre_mm[0], box.centre_mm[1],
-                   box.top_mm + self.part.dims_mm[2] / 2.0)
-        return self.side_grip(resting, side)
+        return self.side_grip(self.resting_on(self.trays[tray], gap_mm), side)
 
     # ---- constraints ---------------------------------------------------------
 
@@ -145,6 +159,56 @@ class Cell:
         (_, y, _), _ = self.pick(side)
         belt_near_edge = self.belt.centre_mm[1] + self.belt.dims_mm[1] / 2.0
         return y > belt_near_edge
+
+
+    # How far the part sits toward the presenting arm's own side. An arm holding a flat
+    # side stands off 175 mm beyond the part, so where the part sits decides where the
+    # flange has to be. Measured: arm-a gets zero IK solutions with its flange at y=+175
+    # and reaches y=+60 only in configurations it then cannot roll out of - the wrist
+    # ends up 17 degrees short with the part pressed against the arm. At 190 the flange
+    # lands near y=0, which it handles comfortably. The camera was pulled back far
+    # enough to frame both arms' presentation points.
+    PRESENT_OFFSET_MM = 190.0
+
+    def inspect_point_mm(self, side: str = "+y") -> Vec3:
+        """Where the part sits to be inspected, for an arm holding `side`."""
+        target = self.camera_target_mm
+        toward = -self.PRESENT_OFFSET_MM if side == "+y" else self.PRESENT_OFFSET_MM
+        return (target[0], target[1] + toward, target[2])
+
+    def present_poses(self, side: str) -> List[Tuple[str, Pose]]:
+        """Flange poses that show the camera each face the cup is not covering.
+
+        Rolling about the tool axis shows four faces - the two ends and the crown and
+        base - but never the free flat side, which stays edge-on to the camera however
+        far it rolls. That one needs the part yawed a quarter turn so it faces the
+        camera, and yawed the way that leaves the ARM behind the part rather than
+        between it and the lens.
+        """
+        centre = self.inspect_point_mm(side)
+        half = self.part.dims_mm[1] / 2.0
+        standoff = half + TOOL_MM
+        sign = 1.0 if side == "+y" else -1.0
+        covered = side
+        free = "-y" if side == "+y" else "+y"
+
+        poses: List[Tuple[str, Pose]] = []
+        # Rolling about the tool axis: the tool stays along -+y, the part spins.
+        rolled = {0.0: "+x", 90.0: "+z", 180.0: "-x", 270.0: "-z"}
+        for theta, face in rolled.items():
+            position = (centre[0], centre[1] + sign * standoff,
+                        centre[2] - GRIP_DROP_MM)
+            orientation = {"o_x": 0.0, "o_y": -sign, "o_z": 0.0, "theta": theta}
+            poses.append((face, (position, orientation)))
+
+        # A quarter turn about z puts the free side towards the camera. The camera looks
+        # back along -x, so the arm must stand off on -x for the part to be in front of
+        # it rather than the other way round.
+        poses.append((free, ((centre[0] - standoff, centre[1],
+                              centre[2] - GRIP_DROP_MM),
+                             {"o_x": 1.0, "o_y": 0.0, "o_z": 0.0, "theta": 0.0})))
+        assert covered not in [face for face, _ in poses]
+        return poses
 
 
 def reach_budget() -> float:

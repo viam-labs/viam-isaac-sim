@@ -102,3 +102,60 @@ def test_the_part_fits_the_inspection_frame(cell):
         f"frame is {frame_mm:.0f} mm and the part is {longest:.0f} mm on its longest "
         f"edge; presentations overflow the image"
     )
+
+
+def test_the_part_fits_inside_the_box_the_planner_is_told_about():
+    """Every piece of the part must sit inside its declared bounding box.
+
+    The planner reasons about one box. A child reaching past it - the flag did, by
+    30 mm - means paths get cleared that the real part does not fit through, and the
+    failure looks like the arm stalling against nothing.
+    """
+    import json
+
+    config = json.loads(
+        (Path(__file__).resolve().parents[1] / "fragments" / "qc-cell.json").read_text())
+    world = next(c for c in config["components"] if c["model"].endswith(":world"))
+    part = next(p for p in world["attributes"]["props"] if p["name"] == "part")
+    half = [v / 2 for v in part["scale"]]
+    for child in part["children"]:
+        position = child.get("position", [0, 0, 0])
+        if child.get("shape", "cube") == "cube":
+            extent = [v / 2 for v in child["scale"]]
+        else:
+            radius = child.get("radius", 0.05)
+            height = child.get("height", 0.1)
+            extent = [height / 2 if child.get("axis") == "X" else radius,
+                      radius, radius]
+        for axis in range(3):
+            reach = abs(position[axis]) + extent[axis]
+            assert reach <= half[axis] + 1e-6, (
+                f"{child['name']} reaches {reach * 1000:.0f} mm on axis {axis}, "
+                f"past the declared {half[axis] * 1000:.0f} mm"
+            )
+
+
+def test_both_presentation_points_are_in_frame(cell):
+    """Each arm presents on its own side of the camera axis, and both must be visible.
+
+    The offset is not a style choice: an arm holding a flat side stands off 175 mm
+    beyond the part, so pushing the part toward the arm is the only way to put its
+    flange somewhere it can actually work. That pushes the part off the camera's axis,
+    and the lens has to cover it.
+    """
+    import json
+    import math
+
+    config = json.loads(
+        (Path(__file__).resolve().parents[1] / "fragments" / "qc-cell.json").read_text())
+    camera = next(c for c in config["components"] if c["name"] == "inspect-cam")
+    distance = math.dist(cell.camera_mm, cell.camera_target_mm)
+    half_frame = distance * math.tan(
+        math.radians(float(camera["attributes"]["fov_deg"])) / 2.0)
+    for side in ("+y", "-y"):
+        point = cell.inspect_point_mm(side)
+        reach = abs(point[1]) + max(cell.part.dims_mm) / 2.0
+        assert reach < half_frame, (
+            f"presenting at y={point[1]:.0f} puts the part's edge {reach:.0f} mm off "
+            f"axis, outside the {half_frame:.0f} mm half-frame"
+        )
