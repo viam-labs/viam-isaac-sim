@@ -8,3 +8,6 @@ venv/
 *~
 module.tar.gz
 dist/
+
+# see makefile for explanation
+run.sh
