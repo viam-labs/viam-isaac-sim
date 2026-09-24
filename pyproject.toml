@@ -5,7 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = "~=3.11.0"
 dependencies = [
-    "numpy>=2.4.6",
-    "pillow>=12.3.0",
+    # todo: experiment with smaller extras here
+    "isaacsim[all,extscache]==5.0.0",
     "viam-sdk>=0.82.0",
 ]
+
+[tool.uv]
+override-dependencies = [
+    # resolves a conflict between isaacsim and viam-sdk
+    "typing-extensions>=4.15.0"
+]
+
+[[tool.uv.index]]
+url = "https://pypi.nvidia.com/"
