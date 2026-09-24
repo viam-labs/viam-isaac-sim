@@ -31,7 +31,7 @@ if [ "$(id -u)" != "0" ]; then
     fi
 fi
 
-APT_DEPS="software-properties-common curl ca-certificates libvulkan1 vulkan-tools libglu1-mesa libegl1 libgomp1 libxt6 libxrandr2"
+APT_DEPS="software-properties-common curl ca-certificates libvulkan1 vulkan-tools libglu1-mesa libegl1 libgomp1 libxt6 libxrandr2 libgl1 libglx0 libopengl0 libglvnd0"
 
 # ---------------------------------------------------------------------------
 # apt: system libs, python, gpu driver
@@ -90,4 +90,5 @@ if ! command -v uv >& /dev/null; then
 fi
 
 # uv sync in first_run.sh because it has a longer default timeout
+uv cache dir
 uv sync
