@@ -24,10 +24,20 @@ import os
 import tempfile
 import time
 import urllib.request
-from typing import Any, ClassVar, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    AsyncIterator,
+    ClassVar,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from typing_extensions import Self
-from viam.components.arm import Arm, JointPositions, KinematicsFileFormat, Pose
+from viam.components.arm import Arm, JointPositions, KinematicsFileFormat, Mesh, Pose
 from viam.proto.app.robot import ComponentConfig
 from viam.proto.common import Geometry, ResourceName
 from viam.resource.base import ResourceBase
@@ -158,6 +168,21 @@ class IsaacArm(Arm, EasyResource):
                     self.name, i + 1, len(waypoints), detail,
                 )
 
+    async def move_through_joint_positions_streamed(  # type: ignore
+        self,
+        batches: AsyncIterator[List[Arm.TrajectoryPoint]],
+        *,
+        extra: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ) -> AsyncIterator[Arm.TrajectoryUpdate]:
+        raise NotImplementedError(
+            f"arm {self.name} does not support move_through_joint_positions_streamed"
+        )
+        # unreachable, but makes this an async generator so the RPC handler's
+        # `async for` surfaces the NotImplementedError instead of a TypeError
+        yield Arm.TrajectoryUpdate()
+
     async def get_joint_positions(self, **kwargs) -> JointPositions:
         radians = await asyncio.to_thread(self._h().get_joint_positions)
         return JointPositions(values=[math.degrees(r) for r in radians])
@@ -217,6 +242,44 @@ class IsaacArm(Arm, EasyResource):
         if self._kinematics is None:
             self._kinematics = await asyncio.to_thread(self._load_kinematics)
         return self._kinematics
+
+    async def get_3d_models(
+        self,
+        *,
+        extra: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ) -> Mapping[str, Mesh]:
+        raise NotImplementedError(f"arm {self.name} does not support get_3d_models")
+
+    async def set_manual_mode(
+        self,
+        manual_mode: bool,
+        enabled_for: int = 0,
+        *,
+        extra: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ) -> None:
+        raise NotImplementedError(f"arm {self.name} does not support manual mode")
+
+    async def get_manual_mode(
+        self,
+        *,
+        extra: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ) -> bool:
+        raise NotImplementedError(f"arm {self.name} does not support manual mode")
+
+    async def get_properties(
+        self,
+        *,
+        extra: Optional[Dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ) -> Arm.Properties:
+        raise NotImplementedError(f"arm {self.name} does not support get_properties")
 
     async def get_geometries(self, **kwargs) -> List[Geometry]:
         return []
