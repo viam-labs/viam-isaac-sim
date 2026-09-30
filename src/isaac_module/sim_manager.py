@@ -12,6 +12,7 @@ machines without Isaac Sim installed.
 """
 
 import math
+import os
 import queue
 import sys
 import threading
@@ -248,7 +249,9 @@ class SimManager:
                 display_options=3286,
             )
 
-        self._sim_app = SimulationApp(launch)
+        self._sim_app = SimulationApp(
+            launch, experience=f'{os.environ["EXP_PATH"]}/isaacsim.exp.base.kit'
+        )
 
         try:
             import carb.settings
