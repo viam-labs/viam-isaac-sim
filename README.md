@@ -1,3 +1,6 @@
+> [!NOTE]
+> This moved to https://github.com/viam-modules/viam-isaac-sim
+
 # viam-isaac-sim
 
 A [Viam](https://www.viam.com) module for controlling and simulating robots in
